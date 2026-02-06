@@ -8,19 +8,28 @@ interface TerminalViewProps {
   session: SessionInfo;
 }
 
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toString();
+}
+
 const COLORS = {
   reset: '\x1b[0m',
   dim: '\x1b[2m',
   bold: '\x1b[1m',
-  green: '\x1b[38;2;78;201;176m',
-  blue: '\x1b[38;2;86;156;214m',
-  yellow: '\x1b[38;2;220;220;170m',
-  orange: '\x1b[38;2;206;145;120m',
-  red: '\x1b[38;2;244;71;71m',
-  cyan: '\x1b[38;2;0;122;204m',
-  gray: '\x1b[38;2;133;133;133m',
-  white: '\x1b[38;2;224;224;224m',
-  magenta: '\x1b[38;2;197;134;192m',
+  green: '\x1b[38;2;34;197;94m',
+  blue: '\x1b[38;2;14;165;233m',
+  yellow: '\x1b[38;2;234;179;8m',
+  orange: '\x1b[38;2;249;115;22m',
+  red: '\x1b[38;2;239;68;68m',
+  cyan: '\x1b[38;2;6;182;212m',
+  gray: '\x1b[38;2;82;82;91m',
+  white: '\x1b[38;2;250;250;250m',
+  magenta: '\x1b[38;2;168;85;247m',
+  teal: '\x1b[38;2;14;165;233m',
+  dimWhite: '\x1b[38;2;161;161;170m',
+  bgDim: '\x1b[48;2;15;15;18m',
 };
 
 function extractTextFromContent(content: any[]): string {
@@ -28,13 +37,11 @@ function extractTextFromContent(content: any[]): string {
   return content.map(c => {
     if (typeof c === 'string') return c;
     if (c.type === 'text') return c.text || '';
-    if (c.type === 'toolCall') {
-      const args = typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {});
-      return `[tool_call: ${c.name}] ${args.substring(0, 300)}`;
-    }
-    if (c.type === 'tool_use') {
-      const args = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
-      return `[tool_call: ${c.name}] ${args.substring(0, 300)}`;
+    if (c.type === 'toolCall' || c.type === 'tool_use') {
+      const args = typeof c.arguments === 'string' ? c.arguments :
+                   typeof c.input === 'string' ? c.input :
+                   JSON.stringify(c.arguments || c.input || {});
+      return `[${c.name}] ${args.substring(0, 300)}`;
     }
     return '';
   }).filter(Boolean).join('\n');
@@ -43,28 +50,35 @@ function extractTextFromContent(content: any[]): string {
 function formatTimestamp(ts?: number): string {
   if (!ts) return '';
   const d = new Date(ts);
-  return d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit' });
 }
 
 function writeMessageToTerminal(term: Terminal, msg: ChatMessage) {
   const ts = formatTimestamp(msg.timestamp);
-  const tsPrefix = ts ? `${COLORS.gray}[${ts}]${COLORS.reset} ` : '';
+  const tsStr = ts ? `${COLORS.gray}${ts} ` : '';
 
   if (msg.role === 'user') {
     const text = extractTextFromContent(msg.content);
     if (!text) return;
-    // Truncate very long user messages
-    const display = text.length > 500 ? text.substring(0, 500) + '...' : text;
+    const display = text.length > 500 ? text.substring(0, 500) + '…' : text;
+    term.writeln('');
+    term.writeln(`${tsStr}${COLORS.blue}${COLORS.bold}▍ user${COLORS.reset}`);
     for (const line of display.split('\n')) {
-      term.writeln(`${tsPrefix}${COLORS.blue}${COLORS.bold}user ▸${COLORS.reset} ${COLORS.white}${line}${COLORS.reset}`);
+      term.writeln(`  ${COLORS.white}${line}${COLORS.reset}`);
     }
   } else if (msg.role === 'assistant') {
     const parts = msg.content || [];
+    let hasText = false;
     for (const part of parts) {
       if (part.type === 'text' && part.text) {
-        const text = part.text.length > 1000 ? part.text.substring(0, 1000) + '...' : part.text;
+        if (!hasText) {
+          term.writeln('');
+          term.writeln(`${tsStr}${COLORS.teal}${COLORS.bold}▍ assistant${COLORS.reset}`);
+          hasText = true;
+        }
+        const text = part.text.length > 1000 ? part.text.substring(0, 1000) + '…' : part.text;
         for (const line of text.split('\n')) {
-          term.writeln(`${tsPrefix}${COLORS.green}assistant ▸${COLORS.reset} ${line}`);
+          term.writeln(`  ${COLORS.dimWhite}${line}${COLORS.reset}`);
         }
       } else if (part.type === 'toolCall' || part.type === 'tool_use') {
         const name = part.name || 'unknown';
@@ -73,29 +87,33 @@ function writeMessageToTerminal(term: Terminal, msg: ChatMessage) {
           : typeof part.input === 'string'
             ? part.input
             : JSON.stringify(part.arguments || part.input || {});
-        const shortArgs = args.length > 200 ? args.substring(0, 200) + '...' : args;
-        term.writeln(`${tsPrefix}${COLORS.yellow}⚡ ${name}${COLORS.reset} ${COLORS.gray}${shortArgs}${COLORS.reset}`);
+        const shortArgs = args.length > 200 ? args.substring(0, 200) + '…' : args;
+        term.writeln(`  ${COLORS.yellow}⚡ ${name}${COLORS.reset}${COLORS.gray} ${shortArgs}${COLORS.reset}`);
       }
     }
-    // Show usage if present
     if (msg.usage) {
       const cost = msg.usage.cost?.total;
-      const tokens = msg.usage.input + msg.usage.output + (msg.usage.cacheRead || 0);
-      term.writeln(`${COLORS.gray}   tokens: ${tokens.toLocaleString()}${cost ? ` | cost: $${cost.toFixed(4)}` : ''}${COLORS.reset}`);
+      const tokens = (msg.usage.input || 0) + (msg.usage.output || 0) + (msg.usage.cacheRead || 0);
+      const parts = [];
+      if (tokens) parts.push(`${tokens.toLocaleString()} tok`);
+      if (cost) parts.push(`$${cost.toFixed(4)}`);
+      if (parts.length) {
+        term.writeln(`  ${COLORS.gray}${parts.join(' · ')}${COLORS.reset}`);
+      }
     }
   } else if (msg.role === 'toolResult' || msg.role === 'tool') {
     const name = msg.toolName || 'result';
     const text = extractTextFromContent(msg.content);
-    const display = text.length > 300 ? text.substring(0, 300) + '...' : text;
+    const display = text.length > 300 ? text.substring(0, 300) + '…' : text;
     if (msg.isError) {
-      term.writeln(`${tsPrefix}${COLORS.red}✗ ${name}:${COLORS.reset} ${COLORS.red}${display}${COLORS.reset}`);
+      term.writeln(`  ${COLORS.red}✗ ${name}: ${display}${COLORS.reset}`);
     } else {
-      term.writeln(`${tsPrefix}${COLORS.magenta}→ ${name}${COLORS.reset} ${COLORS.gray}${display.split('\n')[0]}${COLORS.reset}`);
+      term.writeln(`  ${COLORS.magenta}↩ ${name}${COLORS.reset} ${COLORS.gray}${display.split('\n')[0]}${COLORS.reset}`);
     }
   } else if (msg.role === 'system') {
     const text = extractTextFromContent(msg.content);
     if (text) {
-      term.writeln(`${COLORS.gray}${COLORS.dim}[system] ${text.substring(0, 200)}${COLORS.reset}`);
+      term.writeln(`${COLORS.gray}${COLORS.dim}  ◈ system: ${text.substring(0, 200)}${COLORS.reset}`);
     }
   }
 }
@@ -112,22 +130,22 @@ export function TerminalView({ session }: TerminalViewProps) {
 
     const term = new Terminal({
       theme: {
-        background: '#1e1e1e',
-        foreground: '#cccccc',
-        cursor: '#aeafad',
-        selectionBackground: '#264f78',
-        black: '#000000',
-        red: '#f44747',
-        green: '#4ec9b0',
-        yellow: '#dcdcaa',
-        blue: '#569cd6',
-        magenta: '#c586c0',
-        cyan: '#9cdcfe',
-        white: '#e0e0e0',
+        background: '#09090b',
+        foreground: '#a1a1aa',
+        cursor: '#52525b',
+        selectionBackground: 'rgba(14, 165, 233, 0.3)',
+        black: '#09090b',
+        red: '#ef4444',
+        green: '#22c55e',
+        yellow: '#eab308',
+        blue: '#0ea5e9',
+        magenta: '#a855f7',
+        cyan: '#06b6d4',
+        white: '#fafafa',
       },
       fontSize: 13,
-      fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', monospace",
-      lineHeight: 1.4,
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace",
+      lineHeight: 1.5,
       cursorBlink: false,
       cursorStyle: 'block',
       scrollback: 10000,
@@ -145,21 +163,23 @@ export function TerminalView({ session }: TerminalViewProps) {
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Write header
-    term.writeln(`${COLORS.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}`);
-    term.writeln(`${COLORS.white}${COLORS.bold}  ${session.emoji || '🤖'} ${session.agent}${COLORS.reset} ${COLORS.gray}— ${session.key}${COLORS.reset}`);
-    const info = [
-      session.model && `Model: ${session.model}`,
-      `Status: ${session.status}`,
-      session.totalTokens && `Tokens: ${session.totalTokens.toLocaleString()}`,
-      session.subject && `Subject: ${session.subject}`,
-      session.label && `Label: ${session.label}`,
-    ].filter(Boolean).join(' | ');
-    term.writeln(`${COLORS.gray}  ${info}${COLORS.reset}`);
-    term.writeln(`${COLORS.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}`);
+    // Write clean header
     term.writeln('');
+    term.writeln(`  ${COLORS.teal}${COLORS.bold}${session.emoji || '🤖'} ${session.agent}${COLORS.reset}`);
+    const infoParts = [
+      session.model,
+      session.status,
+      session.totalTokens && `${formatTokens(session.totalTokens)} tokens`,
+    ].filter(Boolean);
+    if (infoParts.length) {
+      term.writeln(`  ${COLORS.gray}${infoParts.join(' · ')}${COLORS.reset}`);
+    }
+    if (session.subject) {
+      term.writeln(`  ${COLORS.gray}${session.subject}${COLORS.reset}`);
+    }
+    term.writeln(`  ${COLORS.gray}${'─'.repeat(70)}${COLORS.reset}`);
 
-    // Fetch real chat history
+    // Fetch chat history
     setLoading(true);
     if (window.reef) {
       window.reef.gateway.chatHistory(session.key, 30).then(result => {
@@ -168,25 +188,25 @@ export function TerminalView({ session }: TerminalViewProps) {
           setMessageCount(result.data.length);
           for (const msg of result.data) {
             writeMessageToTerminal(term, msg);
-            term.writeln(''); // spacing between messages
           }
-          term.writeln(`${COLORS.gray}─── end of history (${result.data.length} messages) ───${COLORS.reset}`);
+          term.writeln('');
+          term.writeln(`  ${COLORS.gray}── ${result.data.length} messages ──${COLORS.reset}`);
         } else {
-          term.writeln(`${COLORS.gray}No chat history available for this session.${COLORS.reset}`);
+          term.writeln('');
+          term.writeln(`  ${COLORS.gray}No history available${COLORS.reset}`);
           if (result.error) {
-            term.writeln(`${COLORS.red}Error: ${result.error}${COLORS.reset}`);
+            term.writeln(`  ${COLORS.red}${result.error}${COLORS.reset}`);
           }
         }
       }).catch(err => {
         setLoading(false);
-        term.writeln(`${COLORS.red}Failed to fetch chat history: ${err}${COLORS.reset}`);
+        term.writeln(`  ${COLORS.red}Failed to fetch history: ${err}${COLORS.reset}`);
       });
     } else {
       setLoading(false);
-      term.writeln(`${COLORS.gray}No gateway connection — showing empty view${COLORS.reset}`);
+      term.writeln(`  ${COLORS.gray}No gateway connection${COLORS.reset}`);
     }
 
-    // Handle resize
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
     });
@@ -199,39 +219,66 @@ export function TerminalView({ session }: TerminalViewProps) {
   }, [session.id]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Terminal header bar */}
-      <div className="flex items-center gap-3 px-4 py-1.5 bg-[#252526] border-b border-reef-border text-xs">
-        <span className="text-reef-text-bright font-medium">
-          {session.emoji} {session.agent}
-        </span>
-        <span className="text-reef-text-dim">—</span>
-        <StatusBadge status={session.status} />
-        <span className="text-reef-text-dim">{session.model}</span>
-        {session.subject && <span className="text-reef-text-dim">• {session.subject}</span>}
-        <div className="flex-1" />
-        {loading && <span className="text-yellow-400 animate-pulse">Loading history...</span>}
-        {!loading && messageCount > 0 && (
-          <span className="text-reef-text-dim">{messageCount} messages</span>
+    <div className="flex flex-col h-full bg-reef-bg">
+      {/* Header bar */}
+      <div className="flex items-center gap-3 px-4 py-2 bg-reef-bg-elevated border-b border-reef-border text-xs">
+        <span className="text-base">{session.emoji || '🤖'}</span>
+        <span className="text-reef-text-bright font-semibold text-[13px]">{session.agent}</span>
+
+        <StatusPill status={session.status} />
+
+        {session.model && (
+          <span className="text-reef-text-dim font-mono text-[11px] bg-reef-border/30 px-1.5 py-0.5 rounded">
+            {session.model}
+          </span>
         )}
-        <span className="text-reef-text-dim">
-          {(session.totalTokens || 0).toLocaleString()} tokens
-        </span>
+
+        {session.subject && (
+          <span className="text-reef-text-dim text-[11px] truncate max-w-[300px]">
+            {session.subject}
+          </span>
+        )}
+
+        <div className="flex-1" />
+
+        {loading && (
+          <div className="flex items-center gap-1.5 text-reef-accent">
+            <span className="w-1.5 h-1.5 rounded-full bg-reef-accent animate-pulse" />
+            <span className="text-[11px]">Loading…</span>
+          </div>
+        )}
+        {!loading && messageCount > 0 && (
+          <span className="text-reef-text-dim text-[11px]">{messageCount} msgs</span>
+        )}
+        {(session.totalTokens || 0) > 0 && (
+          <span className="text-reef-text-dim text-[11px] font-mono">
+            {formatTokens(session.totalTokens || 0)} tok
+          </span>
+        )}
+        {session.cost > 0 && (
+          <span className="text-reef-text-dim text-[11px] font-mono">
+            ${session.cost.toFixed(2)}
+          </span>
+        )}
       </div>
-      <div ref={containerRef} className="flex-1 p-1" />
+
+      {/* Terminal */}
+      <div ref={containerRef} className="flex-1" />
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const styles = {
-    working: 'bg-green-500/20 text-green-400 border-green-500/30',
-    idle: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-    error: 'bg-red-500/20 text-red-400 border-red-500/30',
-    stopped: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+function StatusPill({ status }: { status: string }) {
+  const config: Record<string, { bg: string; text: string; dot: string }> = {
+    working: { bg: 'bg-emerald-500/10', text: 'text-emerald-400', dot: 'bg-emerald-500' },
+    idle: { bg: 'bg-amber-500/10', text: 'text-amber-400', dot: 'bg-amber-500' },
+    error: { bg: 'bg-red-500/10', text: 'text-red-400', dot: 'bg-red-500' },
+    stopped: { bg: 'bg-zinc-500/10', text: 'text-zinc-500', dot: 'bg-zinc-600' },
   };
+  const c = config[status] || config.stopped;
   return (
-    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${styles[status as keyof typeof styles] || styles.stopped}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
       {status}
     </span>
   );
