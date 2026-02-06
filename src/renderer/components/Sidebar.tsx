@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { SessionInfo } from '../types';
 
 interface SidebarProps {
@@ -11,7 +11,8 @@ interface SidebarProps {
 function formatCost(cost: number): string {
   if (cost >= 10) return `$${cost.toFixed(0)}`;
   if (cost >= 1) return `$${cost.toFixed(1)}`;
-  return `$${cost.toFixed(2)}`;
+  if (cost >= 0.01) return `$${cost.toFixed(2)}`;
+  return '$0.00';
 }
 
 function timeAgo(ts?: string | number): string {
@@ -23,6 +24,20 @@ function timeAgo(ts?: string | number): string {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+/** Get a nice display name for a session */
+function sessionDisplayName(s: SessionInfo): string {
+  // Prefer label (e.g. "rex-reef-polish-feb6")
+  if (s.label) return s.label;
+  // Fall back to displayName or subject
+  if (s.displayName) return s.displayName;
+  if (s.subject) {
+    // Truncate long subjects
+    return s.subject.length > 40 ? s.subject.substring(0, 40) + '…' : s.subject;
+  }
+  // For top-level, just show agent name
+  return s.agent;
 }
 
 function SkeletonSidebar() {
@@ -54,43 +69,86 @@ function SkeletonSidebar() {
   );
 }
 
+interface TreeNode {
+  session: SessionInfo;
+  children: TreeNode[];
+  aggregateCost: number;
+  hasActiveChild: boolean;
+}
+
 export function Sidebar({ sessions, selectedSession, onSelectSession, loading }: SidebarProps) {
   const [search, setSearch] = useState('');
-  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const topLevel = useMemo(() => sessions.filter(s => !s.parentSession), [sessions]);
-  const subagentMap = useMemo(() => {
-    const map = new Map<string, SessionInfo[]>();
+  // Build the session tree: parents at top, subagents nested
+  const { tree, activeNodes, recentNodes } = useMemo(() => {
+    // Index all sessions by id/key
+    const byId = new Map<string, SessionInfo>();
+    for (const s of sessions) byId.set(s.id, s);
+
+    // Identify parent→children relationships
+    const childrenOf = new Map<string, SessionInfo[]>();
+    const childIds = new Set<string>();
+
     for (const s of sessions) {
-      if (s.parentSession) {
-        const list = map.get(s.parentSession) || [];
+      if (s.parentSession && byId.has(s.parentSession)) {
+        childIds.add(s.id);
+        const list = childrenOf.get(s.parentSession) || [];
         list.push(s);
-        map.set(s.parentSession, list);
+        childrenOf.set(s.parentSession, list);
       }
     }
-    return map;
+
+    // Top-level = sessions that are NOT children of another session
+    const topLevel = sessions.filter(s => !childIds.has(s.id));
+
+    // Build tree nodes
+    function buildNode(s: SessionInfo): TreeNode {
+      const kids = (childrenOf.get(s.id) || [])
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      const childNodes = kids.map(buildNode);
+      const childCost = childNodes.reduce((sum, c) => sum + c.aggregateCost, 0);
+      const isActive = s.status === 'working' || s.status === 'idle';
+      const hasActiveChild = isActive || childNodes.some(c => c.hasActiveChild);
+      return {
+        session: s,
+        children: childNodes,
+        aggregateCost: s.cost + childCost,
+        hasActiveChild,
+      };
+    }
+
+    const allNodes = topLevel
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .map(buildNode);
+
+    // Split into active (has any active descendant) vs recent
+    const activeNodes = allNodes.filter(n => n.hasActiveChild);
+    const recentNodes = allNodes.filter(n => !n.hasActiveChild);
+
+    return { tree: allNodes, activeNodes, recentNodes };
   }, [sessions]);
 
-  const filtered = useMemo(() => {
-    if (!search) return topLevel;
+  // Filter by search
+  const filteredActive = useMemo(() => {
+    if (!search) return activeNodes;
     const q = search.toLowerCase();
-    return topLevel.filter(s =>
-      s.agent.toLowerCase().includes(q) ||
-      s.label?.toLowerCase().includes(q) ||
-      s.subject?.toLowerCase().includes(q)
-    );
-  }, [topLevel, search]);
+    return activeNodes.filter(n => matchesSearch(n, q));
+  }, [activeNodes, search]);
 
-  const active = useMemo(() => filtered.filter(s => s.status === 'working' || s.status === 'idle'), [filtered]);
-  const stopped = useMemo(() => filtered.filter(s => s.status !== 'working' && s.status !== 'idle'), [filtered]);
+  const filteredRecent = useMemo(() => {
+    if (!search) return recentNodes;
+    const q = search.toLowerCase();
+    return recentNodes.filter(n => matchesSearch(n, q));
+  }, [recentNodes, search]);
 
-  const toggleExpand = (id: string) => {
-    setExpandedSessions(prev => {
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed(prev => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-  };
+  }, []);
 
   return (
     <div className="w-64 min-w-[220px] max-w-[340px] bg-reef-sidebar border-r border-reef-border flex flex-col overflow-hidden transition-all duration-200">
@@ -110,38 +168,38 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
         </div>
       </div>
 
-      {/* Session list */}
-      <div className="flex-1 overflow-y-auto px-1.5">
+      {/* Session tree */}
+      <div className="flex-1 overflow-y-auto px-1">
         {loading ? (
           <SkeletonSidebar />
         ) : (
           <>
-            {active.length > 0 && (
-              <SectionGroup title="Active" count={active.length}>
-                {active.map(session => (
-                  <SessionTree
-                    key={session.id}
-                    session={session}
-                    subs={subagentMap.get(session.id) || []}
+            {filteredActive.length > 0 && (
+              <SectionGroup title="Active" count={filteredActive.length}>
+                {filteredActive.map(node => (
+                  <TreeRow
+                    key={node.session.id}
+                    node={node}
+                    depth={0}
                     selectedSession={selectedSession}
-                    expandedSessions={expandedSessions}
+                    collapsed={collapsed}
                     onSelect={onSelectSession}
-                    onToggle={toggleExpand}
+                    onToggle={toggleCollapse}
                   />
                 ))}
               </SectionGroup>
             )}
-            {stopped.length > 0 && (
-              <SectionGroup title="Recent" count={stopped.length}>
-                {stopped.map(session => (
-                  <SessionTree
-                    key={session.id}
-                    session={session}
-                    subs={subagentMap.get(session.id) || []}
+            {filteredRecent.length > 0 && (
+              <SectionGroup title="Recent" count={filteredRecent.length}>
+                {filteredRecent.map(node => (
+                  <TreeRow
+                    key={node.session.id}
+                    node={node}
+                    depth={0}
                     selectedSession={selectedSession}
-                    expandedSessions={expandedSessions}
+                    collapsed={collapsed}
                     onSelect={onSelectSession}
-                    onToggle={toggleExpand}
+                    onToggle={toggleCollapse}
                   />
                 ))}
               </SectionGroup>
@@ -160,6 +218,17 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
   );
 }
 
+function matchesSearch(node: TreeNode, query: string): boolean {
+  const s = node.session;
+  if (
+    s.agent.toLowerCase().includes(query) ||
+    s.label?.toLowerCase().includes(query) ||
+    s.subject?.toLowerCase().includes(query) ||
+    s.displayName?.toLowerCase().includes(query)
+  ) return true;
+  return node.children.some(c => matchesSearch(c, query));
+}
+
 function SectionGroup({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return (
     <div className="mb-1">
@@ -174,98 +243,120 @@ function SectionGroup({ title, count, children }: { title: string; count: number
   );
 }
 
-function SessionTree({
-  session, subs, selectedSession, expandedSessions, onSelect, onToggle,
+function TreeRow({
+  node, depth, selectedSession, collapsed, onSelect, onToggle,
 }: {
-  session: SessionInfo;
-  subs: SessionInfo[];
+  node: TreeNode;
+  depth: number;
   selectedSession: string | null;
-  expandedSessions: Set<string>;
+  collapsed: Set<string>;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
 }) {
-  const hasSubs = subs.length > 0;
-  const isExpanded = expandedSessions.has(session.id) || hasSubs;
-
-  return (
-    <div>
-      <SessionRow
-        session={session}
-        isSelected={selectedSession === session.id}
-        hasChildren={hasSubs}
-        isExpanded={isExpanded}
-        depth={0}
-        onClick={() => onSelect(session.id)}
-        onToggle={() => onToggle(session.id)}
-      />
-      {isExpanded && subs.map(sub => (
-        <SessionRow
-          key={sub.id}
-          session={sub}
-          isSelected={selectedSession === sub.id}
-          hasChildren={false}
-          isExpanded={false}
-          depth={1}
-          onClick={() => onSelect(sub.id)}
-          onToggle={() => {}}
-        />
-      ))}
-    </div>
-  );
-}
-
-function SessionRow({
-  session, isSelected, hasChildren, isExpanded, depth, onClick, onToggle,
-}: {
-  session: SessionInfo;
-  isSelected: boolean;
-  hasChildren: boolean;
-  isExpanded: boolean;
-  depth: number;
-  onClick: () => void;
-  onToggle: () => void;
-}) {
-  // Status dot: active = green glow, error = red, stopped = grey
+  const { session, children, aggregateCost } = node;
+  const hasChildren = children.length > 0;
+  const isCollapsed = collapsed.has(session.id);
+  const isSelected = selectedSession === session.id;
   const isActive = session.status === 'working' || session.status === 'idle';
   const dotClass = isActive ? 'status-dot-active' :
                    session.status === 'error' ? 'bg-red-500' : 'bg-zinc-600';
 
+  const displayName = sessionDisplayName(session);
+  // For top-level parents, show agent name prominently. For children, show the label.
+  const isTopLevel = depth === 0;
+  const showAgentAboveLabel = isTopLevel && session.label && session.label !== session.agent;
+
   return (
-    <div
-      className={`group flex items-center gap-2 px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[12px] transition-all duration-150 ${
-        isSelected
-          ? 'bg-reef-accent-muted text-reef-text-bright ring-1 ring-reef-accent/20'
-          : 'hover:bg-reef-border/30 text-reef-text'
-      }`}
-      style={{ paddingLeft: `${8 + depth * 14}px` }}
-      onClick={onClick}
-    >
-      {hasChildren ? (
-        <span
-          className="text-[9px] text-reef-text-dim w-3 flex-shrink-0 cursor-pointer hover:text-reef-text transition-colors duration-150"
-          onClick={(e) => { e.stopPropagation(); onToggle(); }}
-        >
-          {isExpanded ? '▼' : '▶'}
-        </span>
-      ) : (
-        <span className="w-3 flex-shrink-0" />
-      )}
-
-      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotClass}`} />
-      <span className="text-sm flex-shrink-0">{session.emoji || '🤖'}</span>
-
-      <div className="flex-1 min-w-0">
-        <div className="truncate font-medium text-[12px]">{session.agent}</div>
-        {session.label && (
-          <div className="truncate text-[10px] text-reef-text-dim leading-tight">{session.label}</div>
+    <>
+      <div
+        className={`group flex items-center gap-1.5 py-1.5 mx-0.5 rounded-md cursor-pointer text-[12px] transition-all duration-150 ${
+          isSelected
+            ? 'bg-reef-accent-muted text-reef-text-bright ring-1 ring-reef-accent/20'
+            : 'hover:bg-reef-border/30 text-reef-text'
+        }`}
+        style={{ paddingLeft: `${6 + depth * 16}px`, paddingRight: '8px' }}
+        onClick={() => onSelect(session.id)}
+      >
+        {/* Expand/collapse chevron */}
+        {hasChildren ? (
+          <button
+            className="w-4 h-4 flex items-center justify-center text-[9px] text-reef-text-dim hover:text-reef-text shrink-0 transition-colors duration-150"
+            onClick={(e) => { e.stopPropagation(); onToggle(session.id); }}
+          >
+            <svg
+              className={`w-3 h-3 transition-transform duration-150 ${isCollapsed ? '' : 'rotate-90'}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" />
         )}
+
+        {/* Status dot */}
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
+
+        {/* Emoji */}
+        <span className={`shrink-0 ${isTopLevel ? 'text-sm' : 'text-xs'}`}>
+          {session.emoji || '🤖'}
+        </span>
+
+        {/* Name + label */}
+        <div className="flex-1 min-w-0">
+          {isTopLevel ? (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="truncate font-semibold text-[12px]">{session.agent}</span>
+                {hasChildren && (
+                  <span className="text-[9px] text-reef-text-muted shrink-0">
+                    {children.length}
+                  </span>
+                )}
+              </div>
+              {showAgentAboveLabel && (
+                <div className="truncate text-[10px] text-reef-text-dim leading-tight">
+                  {session.label}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="truncate text-[11px]">
+              <span className="text-reef-text-dim">{session.emoji ? '' : session.agent + ' · '}</span>
+              {displayName}
+            </div>
+          )}
+        </div>
+
+        {/* Aggregate cost for parents, individual for children */}
+        <span className={`text-[10px] shrink-0 tabular-nums font-mono ${
+          isActive ? 'text-reef-text-dim' : 'text-reef-text-muted'
+        }`}>
+          {formatCost(isTopLevel ? aggregateCost : session.cost)}
+        </span>
       </div>
 
-      <span className={`text-[10px] flex-shrink-0 tabular-nums ${
-        isActive ? 'text-reef-text-dim' : 'text-reef-text-muted'
-      }`}>
-        {formatCost(session.cost)}
-      </span>
-    </div>
+      {/* Children */}
+      {hasChildren && !isCollapsed && (
+        <div className="relative">
+          {/* Tree line */}
+          <div
+            className="absolute top-0 bottom-0 border-l border-reef-border/40"
+            style={{ left: `${14 + depth * 16}px` }}
+          />
+          {children.map(child => (
+            <TreeRow
+              key={child.session.id}
+              node={child}
+              depth={depth + 1}
+              selectedSession={selectedSession}
+              collapsed={collapsed}
+              onSelect={onSelect}
+              onToggle={onToggle}
+            />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
