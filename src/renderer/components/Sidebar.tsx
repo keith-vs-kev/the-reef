@@ -10,20 +10,64 @@ function formatCost(cost: number): string {
   return '$0.00';
 }
 
-const CHANNEL_META: Record<string, { icon: string; label: string; order: number }> = {
-  whatsapp: { icon: '💬', label: 'WhatsApp', order: 0 },
-  telegram: { icon: '📱', label: 'Telegram', order: 1 },
-  discord:  { icon: '🎮', label: 'Discord',  order: 2 },
-  slack:    { icon: '💼', label: 'Slack',     order: 3 },
-  internal: { icon: '🔧', label: 'Internal',  order: 4 },
-};
-
-function channelMeta(ch: string) {
-  return CHANNEL_META[ch] || { icon: '📡', label: ch, order: 3 };
-}
-
 function isActive(s: SessionInfo) {
   return s.status === 'working' || s.status === 'idle';
+}
+
+function statusLabel(s: SessionInfo): string {
+  if (s.status === 'working') return 'active';
+  if (s.status === 'idle') return 'idle';
+  if (s.status === 'error') return 'error';
+  if (s.status === 'thinking') return 'thinking';
+  return 'done';
+}
+
+function statusColor(s: SessionInfo): string {
+  if (s.status === 'working') return 'text-emerald-400';
+  if (s.status === 'idle') return 'text-emerald-400/60';
+  if (s.status === 'error') return 'text-red-400';
+  if (s.status === 'thinking') return 'text-yellow-400';
+  return 'text-reef-text-muted';
+}
+
+/* ── Project inference from session labels ───────────── */
+
+interface ProjectRule {
+  name: string;
+  icon: string;
+  path?: string;
+  keywords: string[];  // match against label, subject, key
+}
+
+const PROJECT_RULES: ProjectRule[] = [
+  { name: 'The Reef',       icon: '🐚', path: '~/projects/the-reef',           keywords: ['reef', 'sidebar', 'electron-poc', 'the-reef'] },
+  { name: 'Nanoclaw',       icon: '🦀', path: '~/projects/nanoclaw',           keywords: ['nanoclaw', 'nano-claw', 'pi-fork', 'reef-core'] },
+  { name: 'PR Tracker',     icon: '📋', path: '~/projects/openclaw-tracker',   keywords: ['prtracker', 'pr-tracker', 'tracker'] },
+  { name: 'Shootout',       icon: '🎯', path: '~/agents/shared/shootout',      keywords: ['shootout', 'shoot-out', 'benchmark'] },
+  { name: 'DroneTrust',     icon: '🚁', path: '~/projects/dronetrust',         keywords: ['dronetrust', 'drone-trust', 'drone'] },
+  { name: 'Solta',          icon: '💊', path: '~/projects/solta',              keywords: ['solta', 'solta-code'] },
+  { name: 'MongoDojo',      icon: '🥋', path: '~/projects/mongodojo',          keywords: ['mongodojo', 'mongo-dojo', 'mongodojoai'] },
+  { name: 'OpenClaw',       icon: '🦞', path: '~/projects/openclaw',           keywords: ['openclaw', 'open-claw', 'clawbot', 'gateway'] },
+  { name: 'Holt AI',        icon: '🧠', path: '~/projects/holt-ai',           keywords: ['holt-ai', 'holt ai', 'adam-sim'] },
+  { name: 'Crypto',         icon: '₿',  path: '~/projects/crypto',             keywords: ['crypto', 'bitcoin', 'trading'] },
+  { name: 'AI Testing',     icon: '🧪', path: '~/projects/ai-testing',         keywords: ['ai-testing', 'testing', 'test-harness'] },
+  { name: 'Marketing',      icon: '📈', path: '~/projects/marketing',          keywords: ['marketing', 'bg-market'] },
+];
+
+function inferProject(s: SessionInfo): ProjectRule | null {
+  const haystack = [
+    s.label || '',
+    s.subject || '',
+    s.displayName || '',
+    s.id,
+  ].join(' ').toLowerCase();
+
+  for (const rule of PROJECT_RULES) {
+    for (const kw of rule.keywords) {
+      if (haystack.includes(kw.toLowerCase())) return rule;
+    }
+  }
+  return null;
 }
 
 /* ── types ───────────────────────────────────────────── */
@@ -33,28 +77,20 @@ interface SessionNode {
   children: SessionNode[];   // subagents
 }
 
-interface ChatGroup {
-  chatId: string;
-  chatName: string;
-  isGroup: boolean;
-  sessions: SessionNode[];   // top-level sessions in this chat
+interface ProjectGroup {
+  name: string;
+  icon: string;
+  path?: string;
+  sessions: SessionNode[];
   totalCost: number;
   hasActive: boolean;
-  sessionCount: number;
-}
-
-interface ChannelGroup {
-  channel: string;
-  meta: { icon: string; label: string; order: number };
-  chats: ChatGroup[];
-  totalCost: number;
-  hasActive: boolean;
+  activeCount: number;
   sessionCount: number;
 }
 
 /* ── hierarchy builder ───────────────────────────────── */
 
-function buildHierarchy(sessions: SessionInfo[]): ChannelGroup[] {
+function buildProjectHierarchy(sessions: SessionInfo[]): ProjectGroup[] {
   const byId = new Map<string, SessionInfo>();
   for (const s of sessions) byId.set(s.id, s);
 
@@ -70,7 +106,6 @@ function buildHierarchy(sessions: SessionInfo[]): ChannelGroup[] {
     }
   }
 
-  // Build session nodes (with nested subagents)
   function buildSessionNode(s: SessionInfo): SessionNode {
     const kids = (childrenOf.get(s.id) || []).sort((a, b) => (b.cost) - (a.cost));
     return { session: s, children: kids.map(buildSessionNode) };
@@ -84,168 +119,64 @@ function buildHierarchy(sessions: SessionInfo[]): ChannelGroup[] {
     return 1 + n.children.reduce((sum, c) => sum + nodeCount(c), 0);
   }
 
-  function nodeHasActive(n: SessionNode): boolean {
-    return isActive(n.session) || n.children.some(nodeHasActive);
+  function nodeActiveCount(n: SessionNode): number {
+    return (isActive(n.session) ? 1 : 0) + n.children.reduce((sum, c) => sum + nodeActiveCount(c), 0);
   }
 
-  // Top-level sessions: not nested as children, and not orphan subagents
+  // Top-level sessions only
   const topLevel = sessions.filter(s => {
     if (childIds.has(s.id)) return false;
-    // Hide orphan subagents (parentSession set but parent not in list)
     if (s.parentSession && !byId.has(s.parentSession)) return false;
-    // Hide subagent-keyed sessions that aren't nested
     if (s.id.includes(':subagent:') && !childrenOf.has(s.id)) return false;
     return true;
   });
 
-  // Determine channel for a session
-  function getChannel(s: SessionInfo): string {
-    if (s.channel && s.channel !== 'subagent') return s.channel;
-    if (s.platform && s.platform !== 'subagent' && s.platform !== 'unknown') return s.platform;
-    return 'internal';
-  }
-
-  // Determine chat grouping key and name
-  function getChatKey(s: SessionInfo): string {
-    // Use recipient to group — multiple agents in same chat share the recipient
-    // Strip type prefix so "group:xxx" and "xxx" map to same key
-    if (s.recipient) {
-      return s.recipient.replace(/^(group|g|dm|channel|thread)[:\-]/i, '');
-    }
-    // Parse the session ID for group/dm info
-    const parts = s.id.split(':');
-    if (parts.length >= 5) {
-      // Skip the type part (group/dm/etc), use just the ID
-      const type = parts[3];
-      if (['group', 'dm', 'channel', 'thread', 'subagent'].includes(type)) {
-        return parts.slice(4).join(':');
-      }
-      return parts.slice(3).join(':');
-    }
-    return s.label || s.id;
-  }
-
-  /** Clean any raw identifier into a human-friendly chat name */
-  function cleanChatId(raw: string): string {
-    // Strip platform prefix (whatsapp:, telegram:, etc.)
-    let c = raw.replace(/^[a-zA-Z]+:/i, '');
-    // Strip type prefix (group:, g-, dm:, dm-, channel:, etc.)
-    c = c.replace(/^(group|g|dm|channel|thread)[:\-]/i, '');
-    // Strip WhatsApp JID suffixes
-    c = c.replace(/@[a-z.]+$/i, '');
-    return c.trim();
-  }
-
-  function prettify(slug: string): string {
-    if (!slug) return '';
-    // Titlecase kebab/snake slugs
-    return slug.split(/[-_]/).filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  }
-
-  function getChatName(sessions: SessionInfo[]): string {
-    const s0 = sessions[0];
-
-    // 1. Clean the recipient field — this is the most reliable source
-    const rawRecip = s0.recipient || '';
-    if (rawRecip) {
-      const clean = cleanChatId(rawRecip);
-      if (clean && /^\+?\d{8,15}$/.test(clean)) return `DM ${clean}`;
-      if (clean && /^\d{10,}$/.test(clean)) return `Group …${clean.slice(-6)}`;
-      if (clean && !/^\d{8,}$/.test(clean) && clean.length < 40) return prettify(clean);
-    }
-
-    // 2. Try displayName (cleaned)
-    for (const s of sessions) {
-      if (s.displayName) {
-        const cleaned = cleanChatId(s.displayName);
-        if (cleaned && !/^\d{8,}$/.test(cleaned)) return prettify(cleaned);
-      }
-    }
-
-    // 3. Try to extract from session labels
-    for (const s of sessions) {
-      if (!s.label) continue;
-      const m = s.label.match(/(?:whatsapp|telegram|discord|slack)-(?:g|dm|group|channel)-([a-z][a-z0-9-]*?)(?:-(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\d*.*)?$/i);
-      if (m) return prettify(m[1]);
-    }
-
-    // 4. Subject (but clean it too — might be a raw ID)
-    for (const s of sessions) {
-      if (s.subject) {
-        const cleaned = cleanChatId(s.subject);
-        if (cleaned && !/^\d{8,}$/.test(cleaned) && cleaned.length <= 40) return prettify(cleaned);
-      }
-    }
-
-    // 5. Parse from session key
-    const parts = s0.id.split(':');
-    if (parts.length >= 5) {
-      const type = parts[3];
-      const rawId = parts.slice(4).join(':');
-      const clean = cleanChatId(rawId);
-      if (clean && !/^\d{8,}$/.test(clean) && clean.length < 30) return prettify(clean);
-      if (type === 'group') return `Group …${clean.slice(-6)}`;
-      if (type === 'dm') return `DM …${clean.slice(-8)}`;
-    }
-
-    return s0.label || s0.agent;
-  }
-
-  // Group: channel → chat → sessions
-  const channelMap = new Map<string, Map<string, SessionNode[]>>();
+  // Group by project
+  const projectMap = new Map<string, { rule: ProjectRule | null; nodes: SessionNode[] }>();
 
   for (const s of topLevel) {
-    const ch = getChannel(s);
-    const chatKey = getChatKey(s);
-    if (!channelMap.has(ch)) channelMap.set(ch, new Map());
-    const chatMap = channelMap.get(ch)!;
-    if (!chatMap.has(chatKey)) chatMap.set(chatKey, []);
-    chatMap.get(chatKey)!.push(buildSessionNode(s));
+    const rule = inferProject(s);
+    const key = rule?.name || '__ungrouped__';
+    if (!projectMap.has(key)) projectMap.set(key, { rule, nodes: [] });
+    projectMap.get(key)!.nodes.push(buildSessionNode(s));
   }
 
-  // Build channel groups
-  const channels: ChannelGroup[] = [];
-  for (const [ch, chatMap] of channelMap) {
-    const meta = channelMeta(ch);
-    const chats: ChatGroup[] = [];
+  // Build project groups
+  const projects: ProjectGroup[] = [];
+  for (const [key, { rule, nodes }] of projectMap) {
+    const totalCost = nodes.reduce((sum, n) => sum + nodeCost(n), 0);
+    const activeCount = nodes.reduce((sum, n) => sum + nodeActiveCount(n), 0);
+    const sessionCount = nodes.reduce((sum, n) => sum + nodeCount(n), 0);
 
-    for (const [chatId, nodes] of chatMap) {
-      // Get chat name from first session
-      const firstName = getChatName(nodes.map(n => n.session));
-      const totalCost = nodes.reduce((sum, n) => sum + nodeCost(n), 0);
-      const hasAct = nodes.some(nodeHasActive);
-      const count = nodes.reduce((sum, n) => sum + nodeCount(n), 0);
-
-      chats.push({
-        chatId,
-        chatName: firstName,
-        isGroup: nodes[0].session.isGroup ?? false,
-        sessions: nodes,
-        totalCost,
-        hasActive: hasAct,
-        sessionCount: count,
-      });
-    }
-
-    // Sort chats: active first, then by cost
-    chats.sort((a, b) => {
-      if (a.hasActive !== b.hasActive) return a.hasActive ? -1 : 1;
-      return b.totalCost - a.totalCost;
+    // Sort sessions within project: active first, then by cost
+    nodes.sort((a, b) => {
+      const aActive = isActive(a.session) ? 1 : 0;
+      const bActive = isActive(b.session) ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+      return nodeCost(b) - nodeCost(a);
     });
 
-    channels.push({
-      channel: ch,
-      meta,
-      chats,
-      totalCost: chats.reduce((sum, c) => sum + c.totalCost, 0),
-      hasActive: chats.some(c => c.hasActive),
-      sessionCount: chats.reduce((sum, c) => sum + c.sessionCount, 0),
+    projects.push({
+      name: rule?.name || 'Ungrouped',
+      icon: rule?.icon || '📂',
+      path: rule?.path,
+      sessions: nodes,
+      totalCost,
+      hasActive: activeCount > 0,
+      activeCount,
+      sessionCount,
     });
   }
 
-  // Sort channels by defined order
-  channels.sort((a, b) => a.meta.order - b.meta.order);
-  return channels;
+  // Sort projects: active first, then by cost, ungrouped always last
+  projects.sort((a, b) => {
+    if (a.name === 'Ungrouped') return 1;
+    if (b.name === 'Ungrouped') return -1;
+    if (a.hasActive !== b.hasActive) return a.hasActive ? -1 : 1;
+    return b.totalCost - a.totalCost;
+  });
+
+  return projects;
 }
 
 /* ── search filter ───────────────────────────────────── */
@@ -264,19 +195,15 @@ function nodeMatches(n: SessionNode, q: string): boolean {
   return sessionMatches(n.session, q) || n.children.some(c => nodeMatches(c, q));
 }
 
-function chatMatches(chat: ChatGroup, q: string): boolean {
-  return chat.chatName.toLowerCase().includes(q) || chat.sessions.some(n => nodeMatches(n, q));
-}
-
-function filterChannels(channels: ChannelGroup[], query: string): ChannelGroup[] {
-  if (!query) return channels;
+function filterProjects(projects: ProjectGroup[], query: string): ProjectGroup[] {
+  if (!query) return projects;
   const q = query.toLowerCase();
-  return channels
-    .map(ch => ({
-      ...ch,
-      chats: ch.chats.filter(c => chatMatches(c, q)),
+  return projects
+    .map(p => ({
+      ...p,
+      sessions: p.sessions.filter(n => nodeMatches(n, q)),
     }))
-    .filter(ch => ch.chats.length > 0);
+    .filter(p => p.sessions.length > 0 || p.name.toLowerCase().includes(q));
 }
 
 /* ── props ───────────────────────────────────────────── */
@@ -328,11 +255,10 @@ function Chevron({ open }: { open: boolean }) {
 
 export function Sidebar({ sessions, selectedSession, onSelectSession, loading }: SidebarProps) {
   const [search, setSearch] = useState('');
-  // Collapsed state: "channel:whatsapp" or "chat:whatsapp:groupid" or session id
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
-  const channels = useMemo(() => buildHierarchy(sessions), [sessions]);
-  const filtered = useMemo(() => filterChannels(channels, search), [channels, search]);
+  const projects = useMemo(() => buildProjectHierarchy(sessions), [sessions]);
+  const filtered = useMemo(() => filterProjects(projects, search), [projects, search]);
 
   const toggle = useCallback((key: string) => {
     setCollapsed(prev => {
@@ -341,6 +267,8 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
       return next;
     });
   }, []);
+
+  const projectCount = projects.filter(p => p.name !== 'Ungrouped').length;
 
   return (
     <div className="w-64 min-w-[220px] max-w-[340px] bg-reef-sidebar border-r border-reef-border flex flex-col overflow-hidden transition-all duration-200">
@@ -360,17 +288,17 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
         </div>
       </div>
 
-      {/* Channel tree */}
+      {/* Project tree */}
       <div className="flex-1 overflow-y-auto px-1">
         {loading ? (
           <SkeletonSidebar />
         ) : filtered.length === 0 ? (
           <div className="text-[11px] text-reef-text-dim text-center py-8">No sessions found</div>
         ) : (
-          filtered.map(ch => (
-            <ChannelRow
-              key={ch.channel}
-              channel={ch}
+          filtered.map(proj => (
+            <ProjectRow
+              key={proj.name}
+              project={proj}
               collapsed={collapsed}
               selectedSession={selectedSession}
               onToggle={toggle}
@@ -383,28 +311,28 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
       {/* Footer */}
       <div className="p-2 border-t border-reef-border">
         <div className="text-[10px] text-reef-text-dim text-center">
-          {sessions.length} sessions · {channels.length} channels
+          {sessions.length} sessions · {projectCount} project{projectCount !== 1 ? 's' : ''}
         </div>
       </div>
     </div>
   );
 }
 
-/* ── Channel row ─────────────────────────────────────── */
+/* ── Project row ─────────────────────────────────────── */
 
-function ChannelRow({ channel, collapsed, selectedSession, onToggle, onSelect }: {
-  channel: ChannelGroup;
+function ProjectRow({ project, collapsed, selectedSession, onToggle, onSelect }: {
+  project: ProjectGroup;
   collapsed: Set<string>;
   selectedSession: string | null;
   onToggle: (key: string) => void;
   onSelect: (id: string) => void;
 }) {
-  const key = `channel:${channel.channel}`;
+  const key = `project:${project.name}`;
   const isOpen = !collapsed.has(key);
 
   return (
     <div className="mb-0.5">
-      {/* Channel header */}
+      {/* Project header */}
       <button
         className="w-full flex items-center gap-1.5 px-2 py-1.5 text-[11px] font-semibold text-reef-text hover:bg-reef-border/20 rounded-md transition-colors duration-150"
         onClick={() => onToggle(key)}
@@ -412,114 +340,34 @@ function ChannelRow({ channel, collapsed, selectedSession, onToggle, onSelect }:
         <span className="w-4 h-4 flex items-center justify-center text-reef-text-dim">
           <Chevron open={isOpen} />
         </span>
-        <span className="text-sm">{channel.meta.icon}</span>
-        <span className="flex-1 text-left truncate">{channel.meta.label}</span>
-        {channel.hasActive && (
+        <span className="text-sm">{project.icon}</span>
+        <div className="flex-1 text-left min-w-0">
+          <div className="truncate">{project.name}</div>
+          {project.path && (
+            <div className="text-[9px] text-reef-text-muted font-normal truncate">{project.path}</div>
+          )}
+        </div>
+        {project.hasActive && (
           <span className="w-1.5 h-1.5 rounded-full status-dot-active shrink-0" />
         )}
-        <span className="text-[9px] text-reef-text-muted bg-reef-border/40 px-1.5 py-0.5 rounded-full tabular-nums">
-          {channel.sessionCount}
-        </span>
-        <span className="text-[10px] text-reef-text-dim font-mono tabular-nums">
-          {formatCost(channel.totalCost)}
+        {project.activeCount > 0 && (
+          <span className="text-[9px] text-emerald-400 bg-emerald-400/10 px-1.5 py-0.5 rounded-full tabular-nums font-medium shrink-0">
+            {project.activeCount} active
+          </span>
+        )}
+        <span className="text-[10px] text-reef-text-dim font-mono tabular-nums shrink-0">
+          {formatCost(project.totalCost)}
         </span>
       </button>
 
-      {/* Chats */}
+      {/* Sessions within project */}
       {isOpen && (
-        <div className="ml-1">
-          {channel.chats.map(chat => (
-            <ChatRow
-              key={chat.chatId}
-              chat={chat}
-              channelKey={channel.channel}
-              collapsed={collapsed}
-              selectedSession={selectedSession}
-              onToggle={onToggle}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Chat row ────────────────────────────────────────── */
-
-function ChatRow({ chat, channelKey, collapsed, selectedSession, onToggle, onSelect }: {
-  chat: ChatGroup;
-  channelKey: string;
-  collapsed: Set<string>;
-  selectedSession: string | null;
-  onToggle: (key: string) => void;
-  onSelect: (id: string) => void;
-}) {
-  const key = `chat:${channelKey}:${chat.chatId}`;
-  const isOpen = !collapsed.has(key);
-  const hasManySessionsOrSubagents = chat.sessionCount > 1;
-
-  // If only one session with no subagents, clicking goes straight to it
-  const singleSession = chat.sessions.length === 1 && chat.sessions[0].children.length === 0
-    ? chat.sessions[0].session : null;
-
-  const isSelected = singleSession && selectedSession === singleSession.id;
-
-  return (
-    <div>
-      <div
-        className={`flex items-center gap-1.5 py-1 mx-0.5 rounded-md cursor-pointer text-[11px] transition-all duration-150 ${
-          isSelected
-            ? 'bg-reef-accent-muted text-reef-text-bright ring-1 ring-reef-accent/20'
-            : 'hover:bg-reef-border/20 text-reef-text'
-        }`}
-        style={{ paddingLeft: '20px', paddingRight: '8px' }}
-        onClick={() => {
-          if (singleSession) {
-            onSelect(singleSession.id);
-          } else {
-            onToggle(key);
-          }
-        }}
-      >
-        {hasManySessionsOrSubagents ? (
-          <span className="w-4 h-4 flex items-center justify-center text-reef-text-dim shrink-0">
-            <Chevron open={isOpen} />
-          </span>
-        ) : (
-          <span className="w-4 shrink-0" />
-        )}
-
-        {chat.hasActive && (
-          <span className="w-1.5 h-1.5 rounded-full status-dot-active shrink-0" />
-        )}
-        {!chat.hasActive && (
-          <span className="w-1.5 h-1.5 rounded-full bg-zinc-600 shrink-0" />
-        )}
-
-        <span className="flex-1 truncate font-medium">
-          {chat.chatName}
-        </span>
-
-        {chat.sessionCount > 1 && (
-          <span className="text-[9px] text-reef-text-muted shrink-0">
-            ({chat.sessionCount})
-          </span>
-        )}
-
-        <span className="text-[10px] text-reef-text-dim font-mono tabular-nums shrink-0">
-          {formatCost(chat.totalCost)}
-        </span>
-      </div>
-
-      {/* Sessions within chat */}
-      {isOpen && hasManySessionsOrSubagents && (
-        <div className="relative">
+        <div className="relative ml-1">
           <div
             className="absolute top-0 bottom-0 border-l border-reef-border/30"
-            style={{ left: '32px' }}
+            style={{ left: '14px' }}
           />
-          {chat.sessions.map(node => (
+          {project.sessions.map(node => (
             <SessionRow
               key={node.session.id}
               node={node}
@@ -556,8 +404,9 @@ function SessionRow({ node, depth, selectedSession, collapsed, onSelect, onToggl
     session.status === 'error' ? 'bg-red-500' :
     session.status === 'thinking' ? 'bg-yellow-500 animate-pulse' : 'bg-zinc-600';
 
-  const label = session.label || session.agent;
-  const baseLeft = 36 + depth * 14;
+  const label = session.label || '';
+  const status = statusLabel(session);
+  const baseLeft = 20 + depth * 14;
 
   return (
     <>
@@ -587,11 +436,11 @@ function SessionRow({ node, depth, selectedSession, collapsed, onSelect, onToggl
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1">
             <span className="font-medium truncate">{session.agent}</span>
-            {active && (
-              <span className="text-[8px] text-emerald-400 font-medium uppercase tracking-wide">active</span>
-            )}
+            <span className={`text-[8px] font-medium uppercase tracking-wide ${statusColor(session)}`}>
+              {status}
+            </span>
           </div>
-          {label !== session.agent && (
+          {label && label !== session.agent && (
             <div className="truncate text-[10px] text-reef-text-dim leading-tight">{label}</div>
           )}
         </div>
