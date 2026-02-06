@@ -7,17 +7,17 @@ contextBridge.exposeInMainWorld('reef', {
     sessions: () => ipcRenderer.invoke('gateway:sessions'),
     chatHistory: (sessionKey: string, limit?: number) => ipcRenderer.invoke('gateway:chat-history', sessionKey, limit),
     usageCost: () => ipcRenderer.invoke('gateway:usage-cost'),
-    gatewayStatus: () => ipcRenderer.invoke('gateway:status'),
+    gatewayStatus: () => ipcRenderer.invoke('gateway:status-info'),
     send: (sessionId: string, message: string) => ipcRenderer.invoke('gateway:send', sessionId, message),
     onEvent: (cb: (event: any) => void) => {
       const listener = (_: any, event: any) => cb(event);
       ipcRenderer.on('gateway:event', listener);
       return () => ipcRenderer.removeListener('gateway:event', listener);
     },
-    onSessions: (cb: (sessions: any[]) => void) => {
-      const listener = (_: any, sessions: any[]) => cb(sessions);
-      ipcRenderer.on('gateway:sessions', listener);
-      return () => ipcRenderer.removeListener('gateway:sessions', listener);
+    onLiveEvent: (cb: (parsed: any) => void) => {
+      const listener = (_: any, parsed: any) => cb(parsed);
+      ipcRenderer.on('gateway:live-event', listener);
+      return () => ipcRenderer.removeListener('gateway:live-event', listener);
     },
     onSessionsData: (cb: (sessions: any[]) => void) => {
       const listener = (_: any, sessions: any[]) => cb(sessions);

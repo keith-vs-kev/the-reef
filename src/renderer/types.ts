@@ -3,7 +3,7 @@ export interface SessionInfo {
   key: string;
   agent: string;
   emoji?: string;
-  status: 'working' | 'idle' | 'error' | 'stopped';
+  status: 'working' | 'idle' | 'error' | 'stopped' | 'thinking';
   model?: string;
   channel?: string;
   cost: number;
@@ -16,6 +16,9 @@ export interface SessionInfo {
   displayName?: string;
   updatedAt?: number;
   totalTokens?: number;
+  platform?: string;
+  recipient?: string;
+  isGroup?: boolean;
 }
 
 export interface ChatMessage {
@@ -30,6 +33,32 @@ export interface ChatMessage {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+}
+
+// Parsed live event from gateway (MonitorAction + session update)
+export interface LiveEvent {
+  session?: {
+    key: string;
+    status?: 'idle' | 'active' | 'thinking';
+    lastActivityAt?: number;
+  };
+  action?: {
+    id: string;
+    runId: string;
+    sessionKey: string;
+    seq: number;
+    type: 'start' | 'streaming' | 'complete' | 'aborted' | 'error' | 'tool_call' | 'tool_result';
+    eventType: 'chat' | 'agent' | 'system';
+    timestamp: number;
+    content?: string;
+    toolName?: string;
+    toolArgs?: unknown;
+    startedAt?: number;
+    endedAt?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    stopReason?: string;
+  };
 }
 
 export interface AppState {
@@ -54,7 +83,7 @@ declare global {
         gatewayStatus: () => Promise<{ ok: boolean; data?: any; error?: string }>;
         send: (sessionId: string, message: string) => Promise<{ ok: boolean; error?: string }>;
         onEvent: (cb: (event: any) => void) => () => void;
-        onSessions: (cb: (sessions: any[]) => void) => () => void;
+        onLiveEvent: (cb: (parsed: LiveEvent) => void) => () => void;
         onSessionsData: (cb: (sessions: any[]) => void) => () => void;
         onUsageData: (cb: (usage: any) => void) => () => void;
         onStatus: (cb: (status: string) => void) => () => void;

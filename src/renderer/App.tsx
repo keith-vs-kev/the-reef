@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { SessionInfo, AppState } from './types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { SessionInfo, AppState, LiveEvent } from './types';
 import { MOCK_SESSIONS } from './mock-data';
 import { parseGatewaySession } from './gateway-utils';
 import { TopBar } from './components/TopBar';
@@ -21,15 +21,15 @@ export function App() {
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
 
-  // Theme toggling
+  // Live actions per session (from event subscriptions)
+  const liveActionsRef = useRef<Map<string, LiveEvent['action'][]>>(new Map());
+
   useEffect(() => {
     document.documentElement.className = state.theme;
   }, [state.theme]);
 
-  // Connect to gateway
   const connectGateway = useCallback(async (url: string) => {
     if (!window.reef) {
-      // Fallback to mock data
       setState(prev => ({ ...prev, connectionStatus: 'connected', gatewayUrl: url, sessions: MOCK_SESSIONS }));
       return;
     }
@@ -38,15 +38,12 @@ export function App() {
       const result = await window.reef.gateway.connect(url);
       if (result.ok) {
         setState(prev => ({ ...prev, connectionStatus: 'connected' }));
-        // Fetch sessions
         await refreshSessions();
         await refreshUsage();
       } else {
-        console.error('Gateway connect failed:', result.error);
         setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
       }
-    } catch (err) {
-      console.error('Gateway connect error:', err);
+    } catch {
       setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
     }
   }, []);
@@ -57,13 +54,10 @@ export function App() {
       const result = await window.reef.gateway.sessions();
       if (result.ok && result.data) {
         const sessions = result.data.map(parseGatewaySession);
-        // Sort: most recently updated first
         sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
         setState(prev => ({ ...prev, sessions }));
       }
-    } catch (err) {
-      console.error('Failed to refresh sessions:', err);
-    }
+    } catch {}
   }, []);
 
   const refreshUsage = useCallback(async () => {
@@ -80,10 +74,9 @@ export function App() {
     } catch {}
   }, []);
 
-  // Listen for pushed data from main process (auto-connect)
+  // Listen for pushed data + live events
   useEffect(() => {
     if (!window.reef) {
-      // No Electron — use mock data
       setState(prev => ({ ...prev, sessions: MOCK_SESSIONS, connectionStatus: 'connected' }));
       return;
     }
@@ -94,7 +87,6 @@ export function App() {
         connectionStatus: status as AppState['connectionStatus'],
       }));
       if (status === 'connected') {
-        // Refresh on reconnect
         refreshSessions();
         refreshUsage();
       }
@@ -114,15 +106,56 @@ export function App() {
       }));
     });
 
-    return () => { unsub1(); unsub2(); unsub3(); };
+    // Live event subscription — update session status in real-time
+    // Following Crabwalk's pattern: events update session status + build action nodes per runId
+    const unsub4 = window.reef.gateway.onLiveEvent((parsed: LiveEvent) => {
+      if (parsed.session) {
+        setState(prev => {
+          const sessions = prev.sessions.map(s => {
+            if (s.key !== parsed.session!.key) return s;
+            // Map monitor status to our status
+            let status = s.status;
+            if (parsed.session!.status === 'thinking') status = 'working';
+            else if (parsed.session!.status === 'active') status = 'idle';
+            return {
+              ...s,
+              status,
+              updatedAt: parsed.session!.lastActivityAt || s.updatedAt,
+            };
+          });
+          return { ...prev, sessions };
+        });
+      }
+
+      // Track live actions per session (unified per runId)
+      if (parsed.action) {
+        const sessionKey = parsed.action.sessionKey;
+        const actions = liveActionsRef.current.get(sessionKey) || [];
+        // Unified node per runId: update existing or add new
+        const actionNodeId = `${parsed.action.runId}-action`;
+        const idx = actions.findIndex(a => a!.id === actionNodeId || a!.runId === parsed.action!.runId);
+        const unified = { ...parsed.action, id: actionNodeId };
+        if (idx >= 0) {
+          actions[idx] = unified;
+        } else {
+          // Tool calls/results get separate nodes
+          if (parsed.action.type === 'tool_call' || parsed.action.type === 'tool_result') {
+            actions.push(parsed.action);
+          } else {
+            actions.push(unified);
+          }
+        }
+        liveActionsRef.current.set(sessionKey, actions);
+      }
+    });
+
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [refreshSessions, refreshUsage]);
 
   // Periodic refresh
   useEffect(() => {
     if (state.connectionStatus !== 'connected') return;
-    const interval = setInterval(() => {
-      refreshSessions();
-    }, 10000);
+    const interval = setInterval(() => { refreshSessions(); }, 10000);
     return () => clearInterval(interval);
   }, [state.connectionStatus, refreshSessions]);
 
@@ -166,7 +199,6 @@ export function App() {
           onSelectSession={selectSession}
         />
         <main className="flex flex-col flex-1 overflow-hidden">
-          {/* Tab bar */}
           {openTabs.length > 0 && (
             <div className="flex bg-reef-bg dark:bg-reef-bg border-b border-reef-border dark:border-reef-border overflow-x-auto">
               {openTabs.map(tabId => {
@@ -196,8 +228,6 @@ export function App() {
               })}
             </div>
           )}
-
-          {/* Terminal area */}
           <div className="flex-1 overflow-hidden">
             {activeSession ? (
               <TerminalView session={activeSession} />
@@ -228,8 +258,8 @@ export function App() {
 }
 
 function StatusDot({ status }: { status: string }) {
-  const color = status === 'working' ? 'bg-green-500' :
-                status === 'idle' ? 'bg-yellow-500' :
+  const color = status === 'working' || status === 'thinking' ? 'bg-green-500' :
+                status === 'idle' || status === 'active' ? 'bg-yellow-500' :
                 status === 'error' ? 'bg-red-500' : 'bg-gray-500';
   return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
 }

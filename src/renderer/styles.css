@@ -4,6 +4,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── CSS Variables: Dark theme (default) ── */
+:root {
+  --reef-bg: #09090b;
+  --reef-bg-elevated: #0f0f12;
+  --reef-sidebar: #0c0c0f;
+  --reef-border: #1e1e24;
+  --reef-border-subtle: #16161c;
+  --reef-accent: #0ea5e9;
+  --reef-accent-hover: #38bdf8;
+  --reef-accent-muted: rgba(14, 165, 233, 0.15);
+  --reef-text: #a1a1aa;
+  --reef-text-bright: #fafafa;
+  --reef-text-dim: #52525b;
+  --reef-text-muted: #3f3f46;
+}
+
+/* ── Light theme ── */
+.light {
+  --reef-bg: #fafafa;
+  --reef-bg-elevated: #ffffff;
+  --reef-sidebar: #f4f4f5;
+  --reef-border: #e4e4e7;
+  --reef-border-subtle: #f0f0f3;
+  --reef-accent: #0284c7;
+  --reef-accent-hover: #0369a1;
+  --reef-accent-muted: rgba(2, 132, 199, 0.1);
+  --reef-text: #52525b;
+  --reef-text-bright: #09090b;
+  --reef-text-dim: #a1a1aa;
+  --reef-text-muted: #d4d4d8;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -13,37 +45,56 @@
 html, body, #root {
   height: 100%;
   width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  background: var(--reef-bg);
+  color: var(--reef-text);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Scrollbar styling */
+/* ── Scrollbar ── */
 ::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #1e1e1e;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #424242;
-  border-radius: 4px;
+  background: var(--reef-border);
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: var(--reef-text-dim);
 }
 
-/* Light theme overrides */
-.light {
-  --reef-bg: #ffffff;
-  --reef-sidebar: #f3f3f3;
-  --reef-border: #e0e0e0;
-  --reef-text: #333333;
-  --reef-text-bright: #111111;
-  --reef-text-dim: #888888;
+/* ── Electron drag region ── */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
 }
 
-.light ::-webkit-scrollbar-track {
-  background: #f3f3f3;
+/* ── Skeleton loading animation ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
-.light ::-webkit-scrollbar-thumb {
-  background: #c1c1c1;
+.skeleton {
+  background: linear-gradient(90deg, var(--reef-border-subtle) 25%, var(--reef-border) 50%, var(--reef-border-subtle) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* ── Xterm overrides ── */
+.xterm {
+  padding: 8px;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--reef-border);
+  border-radius: 3px;
 }

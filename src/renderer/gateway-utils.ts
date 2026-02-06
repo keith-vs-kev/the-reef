@@ -21,10 +21,25 @@ const AGENT_EMOJIS: Record<string, string> = {
   law: '⚖️',
 };
 
+// Adopted from Crabwalk's parseSessionKey
+function parseSessionKey(key: string): {
+  agentId: string;
+  platform: string;
+  recipient: string;
+  isGroup: boolean;
+} {
+  const parts = key.split(':');
+  const agentId = parts[1] || 'unknown';
+  const platform = parts[2] || 'unknown';
+  const hasType = ['channel', 'group', 'dm', 'thread', 'subagent'].includes(parts[3] || '');
+  const isGroup = parts[3] === 'group' || parts[3] === 'channel';
+  const recipient = hasType ? parts.slice(3).join(':') : parts.slice(3).join(':');
+  return { agentId, platform, recipient, isGroup };
+}
+
 export function parseGatewaySession(raw: any): SessionInfo {
   const key = raw.key || '';
-  const parts = key.split(':');
-  const agent = parts[1] || 'unknown';
+  const parsed = parseSessionKey(key);
   const isSubagent = key.includes('subagent');
 
   // Determine status from recent activity
@@ -41,18 +56,15 @@ export function parseGatewaySession(raw: any): SessionInfo {
     status = 'stopped';
   }
 
-  // Calculate cost from usage if available
-  const cost = raw.cost || 0;
-
   return {
     id: key,
     key,
-    agent,
-    emoji: AGENT_EMOJIS[agent] || '🤖',
+    agent: parsed.agentId,
+    emoji: AGENT_EMOJIS[parsed.agentId] || '🤖',
     status,
     model: raw.model,
     channel: raw.channel || raw.lastChannel,
-    cost,
+    cost: raw.cost || 0,
     tokenUsage: {
       input: raw.inputTokens || 0,
       output: raw.outputTokens || 0,
@@ -61,41 +73,14 @@ export function parseGatewaySession(raw: any): SessionInfo {
     },
     totalTokens: raw.totalTokens || 0,
     startedAt: raw.updatedAt ? new Date(raw.updatedAt).toISOString() : undefined,
-    parentSession: isSubagent ? inferParent(key, parts) : undefined,
+    parentSession: isSubagent ? (raw.spawnedBy || undefined) : undefined,
     subagents: [],
     label: raw.label,
     subject: raw.subject,
     displayName: raw.displayName,
     updatedAt: raw.updatedAt,
+    platform: parsed.platform,
+    recipient: parsed.recipient,
+    isGroup: parsed.isGroup,
   };
-}
-
-function inferParent(key: string, parts: string[]): string | undefined {
-  // subagent keys look like: agent:rex-claude:subagent:uuid
-  // parent would be the main session for that agent, but we can't know for sure
-  return undefined;
-}
-
-export function buildSessionTree(sessions: SessionInfo[]): SessionInfo[] {
-  const byId = new Map(sessions.map(s => [s.id, s]));
-
-  // Link subagents to parents
-  for (const session of sessions) {
-    if (session.parentSession && byId.has(session.parentSession)) {
-      byId.get(session.parentSession)!.subagents.push(session.id);
-    }
-  }
-
-  return sessions;
-}
-
-export function formatMessageContent(content: any[]): string {
-  if (!content || !Array.isArray(content)) return '';
-  return content.map(c => {
-    if (typeof c === 'string') return c;
-    if (c.type === 'text') return c.text || '';
-    if (c.type === 'toolCall') return `⚡ ${c.name}(${JSON.stringify(c.arguments || {}).substring(0, 100)}...)`;
-    if (c.type === 'toolResult') return `→ ${c.text || JSON.stringify(c.content || '').substring(0, 200)}`;
-    return JSON.stringify(c).substring(0, 200);
-  }).join('\n');
 }

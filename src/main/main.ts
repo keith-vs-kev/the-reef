@@ -1,11 +1,13 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
 import { GatewayClient } from './gateway-client';
+import { parseEventFrame } from './event-parser';
+import type { EventFrame } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
 let gatewayClient: GatewayClient | null = null;
 
-// Default gateway config — reads from env or hardcoded local defaults
+// Gateway config from env or local defaults
 const GATEWAY_URL = process.env.REEF_GATEWAY_URL || 'ws://127.0.0.1:18789';
 const GATEWAY_TOKEN = process.env.REEF_GATEWAY_TOKEN || '37ac13cf2412f78ac4e1aec254131791';
 
@@ -31,20 +33,22 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
 
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 async function connectGateway(url: string, token: string): Promise<{ ok: boolean; error?: string }> {
   try {
-    if (gatewayClient) {
-      gatewayClient.disconnect();
-    }
+    if (gatewayClient) gatewayClient.disconnect();
     gatewayClient = new GatewayClient(url, token);
-    await gatewayClient.connect();
 
-    gatewayClient.onEvent((event) => {
+    // Subscribe to events — parse them into MonitorAction/Session updates
+    gatewayClient.onEvent((event: EventFrame) => {
+      const parsed = parseEventFrame(event);
+      if (parsed) {
+        // Forward parsed event to renderer for live updates
+        mainWindow?.webContents.send('gateway:live-event', parsed);
+      }
+      // Also forward raw events for extensibility
       mainWindow?.webContents.send('gateway:event', event);
     });
 
@@ -52,6 +56,7 @@ async function connectGateway(url: string, token: string): Promise<{ ok: boolean
       mainWindow?.webContents.send('gateway:status', status);
     });
 
+    await gatewayClient.connect();
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err.message };
@@ -70,7 +75,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('gateway:sessions', async () => {
-    if (!gatewayClient) return { ok: false, error: 'Not connected' };
+    if (!gatewayClient?.connected) return { ok: false, error: 'Not connected' };
     try {
       const sessions = await gatewayClient.listSessions();
       return { ok: true, data: sessions };
@@ -80,7 +85,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('gateway:chat-history', async (_event, sessionKey: string, limit?: number) => {
-    if (!gatewayClient) return { ok: false, error: 'Not connected' };
+    if (!gatewayClient?.connected) return { ok: false, error: 'Not connected' };
     try {
       const messages = await gatewayClient.chatHistory(sessionKey, limit);
       return { ok: true, data: messages };
@@ -90,7 +95,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('gateway:usage-cost', async () => {
-    if (!gatewayClient) return { ok: false, error: 'Not connected' };
+    if (!gatewayClient?.connected) return { ok: false, error: 'Not connected' };
     try {
       const usage = await gatewayClient.usageCost();
       return { ok: true, data: usage };
@@ -99,8 +104,8 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('gateway:status', async () => {
-    if (!gatewayClient) return { ok: false, error: 'Not connected' };
+  ipcMain.handle('gateway:status-info', async () => {
+    if (!gatewayClient?.connected) return { ok: false, error: 'Not connected' };
     try {
       const status = await gatewayClient.getStatus();
       return { ok: true, data: status };
@@ -110,13 +115,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('gateway:send', async (_event, sessionId: string, message: string) => {
-    if (!gatewayClient) return { ok: false, error: 'Not connected' };
-    try {
-      // Not yet implemented in gateway client
-      return { ok: false, error: 'Send not yet implemented' };
-    } catch (err: any) {
-      return { ok: false, error: err.message };
-    }
+    return { ok: false, error: 'Send not yet implemented' };
   });
 }
 
@@ -147,7 +146,5 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
