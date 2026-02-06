@@ -1,0 +1,203 @@
+{
+  "name": "the-reef",
+  "displayName": "The Reef — Agent Orchestration",
+  "description": "Mission control for AI agent orchestration. See, manage, and analyze your OpenClaw agent sessions inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "keith-vs-kev",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keith-vs-kev/the-reef"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Visualization"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "orchestration",
+    "openclaw",
+    "multi-agent",
+    "observability"
+  ],
+  "icon": "media/reef-icon.png",
+  "extensionKind": [
+    "ui",
+    "workspace"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "reef",
+          "title": "The Reef",
+          "icon": "media/reef-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "reef": [
+        {
+          "id": "reef.sessions",
+          "name": "Sessions",
+          "type": "tree"
+        },
+        {
+          "id": "reef.workspaces",
+          "name": "Workspaces",
+          "type": "tree",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "reef.refreshSessions",
+        "title": "Refresh Sessions",
+        "icon": "$(refresh)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.spawnSession",
+        "title": "Spawn Agent Session",
+        "icon": "$(add)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.openTerminal",
+        "title": "Open Agent Terminal",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.stopSession",
+        "title": "Stop Session",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.openCostDashboard",
+        "title": "Open Cost Dashboard",
+        "icon": "$(graph)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.openGraphView",
+        "title": "Open Agent Graph",
+        "icon": "$(type-hierarchy)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.openTaskBoard",
+        "title": "Open Task Board",
+        "icon": "$(checklist)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.createSquad",
+        "title": "Create Squad",
+        "icon": "$(organization)",
+        "category": "Reef"
+      },
+      {
+        "command": "reef.sendMessage",
+        "title": "Send Message to Agent",
+        "category": "Reef"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "reef.refreshSessions",
+          "when": "view == reef.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "reef.spawnSession",
+          "when": "view == reef.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "reef.openTerminal",
+          "when": "view == reef.sessions && viewItem == session",
+          "group": "inline"
+        },
+        {
+          "command": "reef.stopSession",
+          "when": "view == reef.sessions && viewItem == session"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "The Reef",
+      "properties": {
+        "reef.gatewayUrl": {
+          "type": "string",
+          "default": "http://localhost:4440",
+          "description": "OpenClaw Gateway URL"
+        },
+        "reef.pollingInterval": {
+          "type": "number",
+          "default": 5000,
+          "description": "Session polling interval in milliseconds"
+        },
+        "reef.terminalPollingInterval": {
+          "type": "number",
+          "default": 2000,
+          "description": "Terminal history polling interval in milliseconds"
+        },
+        "reef.budgetAlert": {
+          "type": "number",
+          "default": 0,
+          "description": "Budget alert threshold in USD (0 = disabled)"
+        },
+        "reef.github.repo": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub repo for task board (owner/repo format)"
+        },
+        "reef.costRates": {
+          "type": "object",
+          "default": {
+            "claude-opus-4-6": { "input": 15, "output": 75, "cacheRead": 1.5, "cacheWrite": 18.75 },
+            "claude-sonnet-4": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheWrite": 3.75 },
+            "claude-haiku-3.5": { "input": 0.8, "output": 4, "cacheRead": 0.08, "cacheWrite": 1 }
+          },
+          "description": "Token pricing per million tokens by model"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "package": "vsce package",
+    "prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.19.11",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.0.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.10.3"
+  }
+}
