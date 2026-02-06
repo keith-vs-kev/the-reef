@@ -8,6 +8,7 @@ import { ChatView } from './components/ChatView';
 import { StatusBar } from './components/StatusBar';
 import { CommandPalette } from './components/CommandPalette';
 import { ActivityFeed } from './components/ActivityFeed';
+import { SpawnModal } from './components/SpawnModal';
 import { useToast } from './components/ToastContainer';
 
 export function App() {
@@ -25,6 +26,7 @@ export function App() {
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [spawnOpen, setSpawnOpen] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(true);
 
   useEffect(() => {
@@ -37,6 +39,10 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         setPaletteOpen(prev => !prev);
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
+        e.preventDefault();
+        setSpawnOpen(prev => !prev);
       }
     };
     window.addEventListener('keydown', handler);
@@ -160,6 +166,25 @@ export function App() {
     setState(prev => ({ ...prev, theme: prev.theme === 'dark' ? 'light' : 'dark' }));
   }, []);
 
+  const handleSpawn = useCallback(async (task: string, provider: string, model: string) => {
+    try {
+      const resp = await fetch('http://localhost:7777/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task, provider, model }),
+      });
+      const data = await resp.json();
+      if (data.session) {
+        addToast(`Agent spawned (${provider})`, 'success');
+        refreshSessions();
+      } else {
+        addToast(`Spawn failed: ${data.error}`, 'error');
+      }
+    } catch (err: any) {
+      addToast(`Spawn error: ${err.message}`, 'error');
+    }
+  }, [addToast, refreshSessions]);
+
   const activeSession = state.sessions.find(s => s.id === activeTab);
 
   return (
@@ -178,6 +203,7 @@ export function App() {
           selectedSession={state.selectedSession}
           onSelectSession={selectSession}
           loading={sessionsLoading}
+          onSpawn={() => setSpawnOpen(true)}
         />
         <main className="flex flex-col flex-1 overflow-hidden bg-reef-bg relative">
           {/* Tab bar */}
@@ -234,6 +260,13 @@ export function App() {
         totalCost={state.totalCost}
         connectionStatus={state.connectionStatus}
         usageCost={state.usageCost}
+      />
+
+      {/* Spawn Modal */}
+      <SpawnModal
+        open={spawnOpen}
+        onClose={() => setSpawnOpen(false)}
+        onSpawn={handleSpawn}
       />
 
       {/* Command Palette */}

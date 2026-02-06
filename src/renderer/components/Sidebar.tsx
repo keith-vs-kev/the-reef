@@ -213,6 +213,7 @@ interface SidebarProps {
   selectedSession: string | null;
   onSelectSession: (id: string) => void;
   loading?: boolean;
+  onSpawn?: () => void;
 }
 
 /* ── skeleton ────────────────────────────────────────── */
@@ -253,7 +254,7 @@ function Chevron({ open }: { open: boolean }) {
 
 /* ── Main Sidebar ────────────────────────────────────── */
 
-export function Sidebar({ sessions, selectedSession, onSelectSession, loading }: SidebarProps) {
+export function Sidebar({ sessions, selectedSession, onSelectSession, loading, onSpawn }: SidebarProps) {
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -309,7 +310,15 @@ export function Sidebar({ sessions, selectedSession, onSelectSession, loading }:
       </div>
 
       {/* Footer */}
-      <div className="p-2 border-t border-reef-border">
+      <div className="p-2 border-t border-reef-border space-y-1.5">
+        {onSpawn && (
+          <button
+            onClick={onSpawn}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-reef-text hover:text-reef-text-bright bg-reef-border/20 hover:bg-reef-accent/20 border border-reef-border hover:border-reef-accent/40 rounded-md transition-all duration-150"
+          >
+            <span>🚀</span> Spawn Agent <span className="text-[9px] text-reef-text-muted ml-1">⌘N</span>
+          </button>
+        )}
         <div className="text-[10px] text-reef-text-dim text-center">
           {sessions.length} sessions · {projectCount} project{projectCount !== 1 ? 's' : ''}
         </div>
