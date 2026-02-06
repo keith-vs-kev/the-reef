@@ -1,0 +1,49 @@
+@import '@xterm/xterm/css/xterm.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', sans-serif;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #1e1e1e;
+}
+::-webkit-scrollbar-thumb {
+  background: #424242;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Light theme overrides */
+.light {
+  --reef-bg: #ffffff;
+  --reef-sidebar: #f3f3f3;
+  --reef-border: #e0e0e0;
+  --reef-text: #333333;
+  --reef-text-bright: #111111;
+  --reef-text-dim: #888888;
+}
+
+.light ::-webkit-scrollbar-track {
+  background: #f3f3f3;
+}
+.light ::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+}

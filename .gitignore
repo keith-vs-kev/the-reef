@@ -1,4 +1,5 @@
 node_modules/
 dist/
-*.vsix
-.vscode-test/
+.vite/
+*.log
+.DS_Store
