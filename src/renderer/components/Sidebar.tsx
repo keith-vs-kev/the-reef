@@ -88,8 +88,15 @@ function buildHierarchy(sessions: SessionInfo[]): ChannelGroup[] {
     return isActive(n.session) || n.children.some(nodeHasActive);
   }
 
-  // Top-level sessions only (not subagents)
-  const topLevel = sessions.filter(s => !childIds.has(s.id));
+  // Top-level sessions: not nested as children, and not orphan subagents
+  const topLevel = sessions.filter(s => {
+    if (childIds.has(s.id)) return false;
+    // Hide orphan subagents (parentSession set but parent not in list)
+    if (s.parentSession && !byId.has(s.parentSession)) return false;
+    // Hide subagent-keyed sessions that aren't nested
+    if (s.id.includes(':subagent:') && !childrenOf.has(s.id)) return false;
+    return true;
+  });
 
   // Determine channel for a session
   function getChannel(s: SessionInfo): string {
