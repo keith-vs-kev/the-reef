@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { SessionInfo, AppState } from './types';
 import { MOCK_SESSIONS } from './mock-data';
+import { parseGatewaySession } from './gateway-utils';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { TerminalView } from './components/TerminalView';
@@ -8,32 +9,28 @@ import { StatusBar } from './components/StatusBar';
 
 export function App() {
   const [state, setState] = useState<AppState>({
-    sessions: MOCK_SESSIONS,
+    sessions: [],
     selectedSession: null,
-    connectionStatus: 'connected',
+    connectionStatus: 'disconnected',
     gatewayUrl: 'ws://127.0.0.1:18789',
     theme: 'dark',
     totalCost: 0,
+    usageCost: null,
   });
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
-
-  // Calculate total cost
-  useEffect(() => {
-    const total = state.sessions.reduce((sum, s) => sum + s.cost, 0);
-    setState(prev => ({ ...prev, totalCost: total }));
-  }, [state.sessions]);
 
   // Theme toggling
   useEffect(() => {
     document.documentElement.className = state.theme;
   }, [state.theme]);
 
-  // Connect to gateway (real mode)
+  // Connect to gateway
   const connectGateway = useCallback(async (url: string) => {
     if (!window.reef) {
-      setState(prev => ({ ...prev, connectionStatus: 'connected', gatewayUrl: url }));
+      // Fallback to mock data
+      setState(prev => ({ ...prev, connectionStatus: 'connected', gatewayUrl: url, sessions: MOCK_SESSIONS }));
       return;
     }
     setState(prev => ({ ...prev, connectionStatus: 'connecting', gatewayUrl: url }));
@@ -41,31 +38,93 @@ export function App() {
       const result = await window.reef.gateway.connect(url);
       if (result.ok) {
         setState(prev => ({ ...prev, connectionStatus: 'connected' }));
+        // Fetch sessions
+        await refreshSessions();
+        await refreshUsage();
       } else {
-        setState(prev => ({ ...prev, connectionStatus: 'error' }));
+        console.error('Gateway connect failed:', result.error);
+        setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
       }
-    } catch {
-      setState(prev => ({ ...prev, connectionStatus: 'error' }));
+    } catch (err) {
+      console.error('Gateway connect error:', err);
+      setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
     }
   }, []);
 
-  // Listen for session updates from main process
-  useEffect(() => {
+  const refreshSessions = useCallback(async () => {
     if (!window.reef) return;
+    try {
+      const result = await window.reef.gateway.sessions();
+      if (result.ok && result.data) {
+        const sessions = result.data.map(parseGatewaySession);
+        // Sort: most recently updated first
+        sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        setState(prev => ({ ...prev, sessions }));
+      }
+    } catch (err) {
+      console.error('Failed to refresh sessions:', err);
+    }
+  }, []);
 
-    const unsub1 = window.reef.gateway.onSessions((sessions: SessionInfo[]) => {
-      setState(prev => ({ ...prev, sessions }));
-    });
+  const refreshUsage = useCallback(async () => {
+    if (!window.reef) return;
+    try {
+      const result = await window.reef.gateway.usageCost();
+      if (result.ok && result.data) {
+        setState(prev => ({
+          ...prev,
+          usageCost: result.data,
+          totalCost: result.data.totals?.totalCost || 0,
+        }));
+      }
+    } catch {}
+  }, []);
 
-    const unsub2 = window.reef.gateway.onStatus((status: string) => {
+  // Listen for pushed data from main process (auto-connect)
+  useEffect(() => {
+    if (!window.reef) {
+      // No Electron — use mock data
+      setState(prev => ({ ...prev, sessions: MOCK_SESSIONS, connectionStatus: 'connected' }));
+      return;
+    }
+
+    const unsub1 = window.reef.gateway.onStatus((status: string) => {
       setState(prev => ({
         ...prev,
         connectionStatus: status as AppState['connectionStatus'],
       }));
+      if (status === 'connected') {
+        // Refresh on reconnect
+        refreshSessions();
+        refreshUsage();
+      }
     });
 
-    return () => { unsub1(); unsub2(); };
-  }, []);
+    const unsub2 = window.reef.gateway.onSessionsData((rawSessions: any[]) => {
+      const sessions = rawSessions.map(parseGatewaySession);
+      sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      setState(prev => ({ ...prev, sessions, connectionStatus: 'connected' }));
+    });
+
+    const unsub3 = window.reef.gateway.onUsageData((usage: any) => {
+      setState(prev => ({
+        ...prev,
+        usageCost: usage,
+        totalCost: usage?.totals?.totalCost || 0,
+      }));
+    });
+
+    return () => { unsub1(); unsub2(); unsub3(); };
+  }, [refreshSessions, refreshUsage]);
+
+  // Periodic refresh
+  useEffect(() => {
+    if (state.connectionStatus !== 'connected') return;
+    const interval = setInterval(() => {
+      refreshSessions();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [state.connectionStatus, refreshSessions]);
 
   const selectSession = useCallback((sessionId: string) => {
     setState(prev => ({ ...prev, selectedSession: sessionId }));
@@ -147,7 +206,11 @@ export function App() {
                 <div className="text-center">
                   <div className="text-6xl mb-4">🐚</div>
                   <div className="text-xl font-light mb-2">The Reef</div>
-                  <div className="text-sm">Select a session from the sidebar to view agent activity</div>
+                  <div className="text-sm">
+                    {state.connectionStatus === 'connected'
+                      ? `${state.sessions.length} sessions loaded — select one from the sidebar`
+                      : 'Connecting to gateway...'}
+                  </div>
                 </div>
               </div>
             )}
@@ -158,6 +221,7 @@ export function App() {
         sessions={state.sessions}
         totalCost={state.totalCost}
         connectionStatus={state.connectionStatus}
+        usageCost={state.usageCost}
       />
     </div>
   );

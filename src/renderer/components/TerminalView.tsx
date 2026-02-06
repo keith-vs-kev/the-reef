@@ -2,8 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { SessionInfo } from '../types';
-import { MOCK_TERMINAL_LINES, MOCK_TERMINAL_LINES_SENTINEL, MOCK_TERMINAL_LINES_SCOUT } from '../mock-data';
+import { SessionInfo, ChatMessage } from '../types';
 
 interface TerminalViewProps {
   session: SessionInfo;
@@ -21,28 +20,83 @@ const COLORS = {
   cyan: '\x1b[38;2;0;122;204m',
   gray: '\x1b[38;2;133;133;133m',
   white: '\x1b[38;2;224;224;224m',
+  magenta: '\x1b[38;2;197;134;192m',
 };
 
-function getTerminalLines(agent: string) {
-  if (agent === 'sentinel') return MOCK_TERMINAL_LINES_SENTINEL;
-  if (agent === 'scout') return MOCK_TERMINAL_LINES_SCOUT;
-  return MOCK_TERMINAL_LINES;
+function extractTextFromContent(content: any[]): string {
+  if (!content || !Array.isArray(content)) return '';
+  return content.map(c => {
+    if (typeof c === 'string') return c;
+    if (c.type === 'text') return c.text || '';
+    if (c.type === 'toolCall') {
+      const args = typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {});
+      return `[tool_call: ${c.name}] ${args.substring(0, 300)}`;
+    }
+    if (c.type === 'tool_use') {
+      const args = typeof c.input === 'string' ? c.input : JSON.stringify(c.input || {});
+      return `[tool_call: ${c.name}] ${args.substring(0, 300)}`;
+    }
+    return '';
+  }).filter(Boolean).join('\n');
 }
 
-function formatLine(line: { type: string; text: string }): string {
-  switch (line.type) {
-    case 'system':
-      return `${COLORS.gray}${line.text}${COLORS.reset}`;
-    case 'agent':
-      return `${COLORS.green}${line.text}${COLORS.reset}`;
-    case 'tool':
-      return `${COLORS.yellow}${line.text}${COLORS.reset}`;
-    case 'info':
-      return `${COLORS.blue}${line.text}${COLORS.reset}`;
-    case 'error':
-      return `${COLORS.red}${line.text}${COLORS.reset}`;
-    default:
-      return line.text;
+function formatTimestamp(ts?: number): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleTimeString('en-NZ', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function writeMessageToTerminal(term: Terminal, msg: ChatMessage) {
+  const ts = formatTimestamp(msg.timestamp);
+  const tsPrefix = ts ? `${COLORS.gray}[${ts}]${COLORS.reset} ` : '';
+
+  if (msg.role === 'user') {
+    const text = extractTextFromContent(msg.content);
+    if (!text) return;
+    // Truncate very long user messages
+    const display = text.length > 500 ? text.substring(0, 500) + '...' : text;
+    for (const line of display.split('\n')) {
+      term.writeln(`${tsPrefix}${COLORS.blue}${COLORS.bold}user ▸${COLORS.reset} ${COLORS.white}${line}${COLORS.reset}`);
+    }
+  } else if (msg.role === 'assistant') {
+    const parts = msg.content || [];
+    for (const part of parts) {
+      if (part.type === 'text' && part.text) {
+        const text = part.text.length > 1000 ? part.text.substring(0, 1000) + '...' : part.text;
+        for (const line of text.split('\n')) {
+          term.writeln(`${tsPrefix}${COLORS.green}assistant ▸${COLORS.reset} ${line}`);
+        }
+      } else if (part.type === 'toolCall' || part.type === 'tool_use') {
+        const name = part.name || 'unknown';
+        const args = typeof part.arguments === 'string'
+          ? part.arguments
+          : typeof part.input === 'string'
+            ? part.input
+            : JSON.stringify(part.arguments || part.input || {});
+        const shortArgs = args.length > 200 ? args.substring(0, 200) + '...' : args;
+        term.writeln(`${tsPrefix}${COLORS.yellow}⚡ ${name}${COLORS.reset} ${COLORS.gray}${shortArgs}${COLORS.reset}`);
+      }
+    }
+    // Show usage if present
+    if (msg.usage) {
+      const cost = msg.usage.cost?.total;
+      const tokens = msg.usage.input + msg.usage.output + (msg.usage.cacheRead || 0);
+      term.writeln(`${COLORS.gray}   tokens: ${tokens.toLocaleString()}${cost ? ` | cost: $${cost.toFixed(4)}` : ''}${COLORS.reset}`);
+    }
+  } else if (msg.role === 'toolResult' || msg.role === 'tool') {
+    const name = msg.toolName || 'result';
+    const text = extractTextFromContent(msg.content);
+    const display = text.length > 300 ? text.substring(0, 300) + '...' : text;
+    if (msg.isError) {
+      term.writeln(`${tsPrefix}${COLORS.red}✗ ${name}:${COLORS.reset} ${COLORS.red}${display}${COLORS.reset}`);
+    } else {
+      term.writeln(`${tsPrefix}${COLORS.magenta}→ ${name}${COLORS.reset} ${COLORS.gray}${display.split('\n')[0]}${COLORS.reset}`);
+    }
+  } else if (msg.role === 'system') {
+    const text = extractTextFromContent(msg.content);
+    if (text) {
+      term.writeln(`${COLORS.gray}${COLORS.dim}[system] ${text.substring(0, 200)}${COLORS.reset}`);
+    }
   }
 }
 
@@ -50,6 +104,8 @@ export function TerminalView({ session }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [messageCount, setMessageCount] = useState(0);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -72,10 +128,11 @@ export function TerminalView({ session }: TerminalViewProps) {
       fontSize: 13,
       fontFamily: "'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Menlo', monospace",
       lineHeight: 1.4,
-      cursorBlink: true,
+      cursorBlink: false,
       cursorStyle: 'block',
-      scrollback: 5000,
+      scrollback: 10000,
       allowTransparency: true,
+      disableStdin: true,
     });
 
     const fitAddon = new FitAddon();
@@ -84,30 +141,50 @@ export function TerminalView({ session }: TerminalViewProps) {
 
     term.open(containerRef.current);
     fitAddon.fit();
-    
+
     termRef.current = term;
     fitAddonRef.current = fitAddon;
 
     // Write header
     term.writeln(`${COLORS.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}`);
-    term.writeln(`${COLORS.white}${COLORS.bold}  ${session.emoji || '🤖'} ${session.agent}${COLORS.reset} ${COLORS.gray}— ${session.id}${COLORS.reset}`);
-    term.writeln(`${COLORS.gray}  Model: ${session.model || 'unknown'} | Status: ${session.status} | Cost: $${session.cost.toFixed(2)}${COLORS.reset}`);
+    term.writeln(`${COLORS.white}${COLORS.bold}  ${session.emoji || '🤖'} ${session.agent}${COLORS.reset} ${COLORS.gray}— ${session.key}${COLORS.reset}`);
+    const info = [
+      session.model && `Model: ${session.model}`,
+      `Status: ${session.status}`,
+      session.totalTokens && `Tokens: ${session.totalTokens.toLocaleString()}`,
+      session.subject && `Subject: ${session.subject}`,
+      session.label && `Label: ${session.label}`,
+    ].filter(Boolean).join(' | ');
+    term.writeln(`${COLORS.gray}  ${info}${COLORS.reset}`);
     term.writeln(`${COLORS.cyan}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLORS.reset}`);
     term.writeln('');
 
-    // Progressively write mock terminal output
-    const lines = getTerminalLines(session.agent);
-    let lineIndex = 0;
-
-    const writeNext = () => {
-      if (lineIndex < lines.length) {
-        term.writeln(formatLine(lines[lineIndex]));
-        lineIndex++;
-      }
-    };
-
-    // Write lines with delay for realistic feel
-    const interval = setInterval(writeNext, 300);
+    // Fetch real chat history
+    setLoading(true);
+    if (window.reef) {
+      window.reef.gateway.chatHistory(session.key, 30).then(result => {
+        setLoading(false);
+        if (result.ok && result.data && result.data.length > 0) {
+          setMessageCount(result.data.length);
+          for (const msg of result.data) {
+            writeMessageToTerminal(term, msg);
+            term.writeln(''); // spacing between messages
+          }
+          term.writeln(`${COLORS.gray}─── end of history (${result.data.length} messages) ───${COLORS.reset}`);
+        } else {
+          term.writeln(`${COLORS.gray}No chat history available for this session.${COLORS.reset}`);
+          if (result.error) {
+            term.writeln(`${COLORS.red}Error: ${result.error}${COLORS.reset}`);
+          }
+        }
+      }).catch(err => {
+        setLoading(false);
+        term.writeln(`${COLORS.red}Failed to fetch chat history: ${err}${COLORS.reset}`);
+      });
+    } else {
+      setLoading(false);
+      term.writeln(`${COLORS.gray}No gateway connection — showing empty view${COLORS.reset}`);
+    }
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
@@ -116,7 +193,6 @@ export function TerminalView({ session }: TerminalViewProps) {
     resizeObserver.observe(containerRef.current);
 
     return () => {
-      clearInterval(interval);
       resizeObserver.disconnect();
       term.dispose();
     };
@@ -132,9 +208,14 @@ export function TerminalView({ session }: TerminalViewProps) {
         <span className="text-reef-text-dim">—</span>
         <StatusBadge status={session.status} />
         <span className="text-reef-text-dim">{session.model}</span>
+        {session.subject && <span className="text-reef-text-dim">• {session.subject}</span>}
         <div className="flex-1" />
+        {loading && <span className="text-yellow-400 animate-pulse">Loading history...</span>}
+        {!loading && messageCount > 0 && (
+          <span className="text-reef-text-dim">{messageCount} messages</span>
+        )}
         <span className="text-reef-text-dim">
-          {session.tokenUsage.input.toLocaleString()} tokens in / {session.tokenUsage.output.toLocaleString()} out
+          {(session.totalTokens || 0).toLocaleString()} tokens
         </span>
       </div>
       <div ref={containerRef} className="flex-1 p-1" />

@@ -11,6 +11,25 @@ export interface SessionInfo {
   startedAt?: string;
   parentSession?: string;
   subagents: string[];
+  label?: string;
+  subject?: string;
+  displayName?: string;
+  updatedAt?: number;
+  totalTokens?: number;
+}
+
+export interface ChatMessage {
+  role: string;
+  content: any[];
+  timestamp?: number;
+  api?: string;
+  provider?: string;
+  model?: string;
+  usage?: any;
+  stopReason?: string;
+  toolCallId?: string;
+  toolName?: string;
+  isError?: boolean;
 }
 
 export interface AppState {
@@ -20,6 +39,7 @@ export interface AppState {
   gatewayUrl: string;
   theme: 'dark' | 'light';
   totalCost: number;
+  usageCost: any | null;
 }
 
 declare global {
@@ -28,10 +48,15 @@ declare global {
       gateway: {
         connect: (url: string, token?: string) => Promise<{ ok: boolean; error?: string }>;
         disconnect: () => Promise<{ ok: boolean }>;
-        sessions: () => Promise<{ ok: boolean; data?: SessionInfo[]; error?: string }>;
+        sessions: () => Promise<{ ok: boolean; data?: any[]; error?: string }>;
+        chatHistory: (sessionKey: string, limit?: number) => Promise<{ ok: boolean; data?: ChatMessage[]; error?: string }>;
+        usageCost: () => Promise<{ ok: boolean; data?: any; error?: string }>;
+        gatewayStatus: () => Promise<{ ok: boolean; data?: any; error?: string }>;
         send: (sessionId: string, message: string) => Promise<{ ok: boolean; error?: string }>;
         onEvent: (cb: (event: any) => void) => () => void;
-        onSessions: (cb: (sessions: SessionInfo[]) => void) => () => void;
+        onSessions: (cb: (sessions: any[]) => void) => () => void;
+        onSessionsData: (cb: (sessions: any[]) => void) => () => void;
+        onUsageData: (cb: (usage: any) => void) => () => void;
         onStatus: (cb: (status: string) => void) => () => void;
       };
     };
