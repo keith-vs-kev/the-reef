@@ -4,10 +4,14 @@ import { MOCK_SESSIONS } from './mock-data';
 import { parseGatewaySession } from './gateway-utils';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
-import { TerminalView } from './components/TerminalView';
+import { ChatView } from './components/ChatView';
 import { StatusBar } from './components/StatusBar';
+import { CommandPalette } from './components/CommandPalette';
+import { ActivityFeed } from './components/ActivityFeed';
+import { useToast } from './components/ToastContainer';
 
 export function App() {
+  const { addToast } = useToast();
   const [state, setState] = useState<AppState>({
     sessions: [],
     selectedSession: null,
@@ -20,14 +24,29 @@ export function App() {
 
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeTab, setActiveTab] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
 
   useEffect(() => {
     document.documentElement.className = state.theme;
   }, [state.theme]);
 
+  // Cmd+K command palette
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setPaletteOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const connectGateway = useCallback(async (url: string) => {
     if (!window.reef) {
       setState(prev => ({ ...prev, connectionStatus: 'connected', gatewayUrl: url, sessions: MOCK_SESSIONS }));
+      setSessionsLoading(false);
       return;
     }
     setState(prev => ({ ...prev, connectionStatus: 'connecting', gatewayUrl: url }));
@@ -35,15 +54,20 @@ export function App() {
       const result = await window.reef.gateway.connect(url);
       if (result.ok) {
         setState(prev => ({ ...prev, connectionStatus: 'connected' }));
+        addToast('Gateway connected', 'success');
         await refreshSessions();
         await refreshUsage();
       } else {
         setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
+        setSessionsLoading(false);
+        addToast('Gateway connection failed', 'error');
       }
     } catch {
       setState(prev => ({ ...prev, connectionStatus: 'error', sessions: MOCK_SESSIONS }));
+      setSessionsLoading(false);
+      addToast('Gateway connection error', 'error');
     }
-  }, []);
+  }, [addToast]);
 
   const refreshSessions = useCallback(async () => {
     if (!window.reef) return;
@@ -55,6 +79,7 @@ export function App() {
         setState(prev => ({ ...prev, sessions }));
       }
     } catch {}
+    setSessionsLoading(false);
   }, []);
 
   const refreshUsage = useCallback(async () => {
@@ -74,28 +99,44 @@ export function App() {
   useEffect(() => {
     if (!window.reef) {
       setState(prev => ({ ...prev, sessions: MOCK_SESSIONS, connectionStatus: 'connected' }));
+      setSessionsLoading(false);
       return;
     }
     const unsub1 = window.reef.gateway.onStatus((status: string) => {
       setState(prev => ({ ...prev, connectionStatus: status as AppState['connectionStatus'] }));
-      if (status === 'connected') { refreshSessions(); refreshUsage(); }
+      if (status === 'connected') {
+        refreshSessions();
+        refreshUsage();
+        addToast('Gateway reconnected', 'success');
+      }
     });
     const unsub2 = window.reef.gateway.onSessionsData((rawSessions: any[]) => {
       const sessions = rawSessions.map(parseGatewaySession);
       sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
       setState(prev => ({ ...prev, sessions, connectionStatus: 'connected' }));
+      setSessionsLoading(false);
     });
     const unsub3 = window.reef.gateway.onUsageData((usage: any) => {
       setState(prev => ({ ...prev, usageCost: usage, totalCost: usage?.totals?.totalCost || 0 }));
     });
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refreshSessions, refreshUsage]);
+  }, [refreshSessions, refreshUsage, addToast]);
 
   useEffect(() => {
     if (state.connectionStatus !== 'connected') return;
     const interval = setInterval(refreshSessions, 10000);
     return () => clearInterval(interval);
   }, [state.connectionStatus, refreshSessions]);
+
+  // Auto-select first active session on load
+  useEffect(() => {
+    if (state.sessions.length > 0 && !activeTab) {
+      const active = state.sessions.find(s => s.status === 'working' || s.status === 'idle');
+      if (active) {
+        selectSession(active.id);
+      }
+    }
+  }, [state.sessions]);
 
   const selectSession = useCallback((sessionId: string) => {
     setState(prev => ({ ...prev, selectedSession: sessionId }));
@@ -129,24 +170,27 @@ export function App() {
         theme={state.theme}
         onConnect={connectGateway}
         onToggleTheme={toggleTheme}
+        onOpenPalette={() => setPaletteOpen(true)}
       />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
           sessions={state.sessions}
           selectedSession={state.selectedSession}
           onSelectSession={selectSession}
+          loading={sessionsLoading}
         />
-        <main className="flex flex-col flex-1 overflow-hidden bg-reef-bg">
+        <main className="flex flex-col flex-1 overflow-hidden bg-reef-bg relative">
           {/* Tab bar */}
           {openTabs.length > 0 && (
             <div className="flex bg-reef-bg-elevated border-b border-reef-border overflow-x-auto">
               {openTabs.map(tabId => {
                 const session = state.sessions.find(s => s.id === tabId);
                 const isActive = tabId === activeTab;
+                const isWorking = session?.status === 'working' || session?.status === 'idle';
                 return (
                   <div
                     key={tabId}
-                    className={`flex items-center gap-1.5 px-3 py-2 text-xs cursor-pointer border-r border-reef-border whitespace-nowrap transition-colors ${
+                    className={`flex items-center gap-1.5 px-3 py-2 text-xs cursor-pointer border-r border-reef-border whitespace-nowrap transition-all duration-150 ${
                       isActive
                         ? 'bg-reef-bg text-reef-text-bright border-b-2 border-b-reef-accent -mb-px'
                         : 'text-reef-text-dim hover:text-reef-text hover:bg-reef-border/20'
@@ -155,9 +199,12 @@ export function App() {
                   >
                     {session?.emoji && <span className="text-sm">{session.emoji}</span>}
                     <span className="font-medium">{session?.agent || tabId.split(':')[1]}</span>
-                    <StatusDot status={session?.status || 'stopped'} />
+                    <span className={`w-1.5 h-1.5 rounded-full ${
+                      isWorking ? 'status-dot-active' :
+                      session?.status === 'error' ? 'bg-red-500' : 'bg-zinc-600'
+                    }`} />
                     <button
-                      className="ml-1 text-reef-text-muted hover:text-reef-text-bright rounded-sm hover:bg-reef-border/50 w-4 h-4 flex items-center justify-center transition-colors"
+                      className="ml-1 text-reef-text-muted hover:text-reef-text-bright rounded-sm hover:bg-reef-border/50 w-4 h-4 flex items-center justify-center transition-colors duration-150"
                       onClick={(e) => { e.stopPropagation(); closeTab(tabId); }}
                     >
                       ×
@@ -169,34 +216,15 @@ export function App() {
           )}
 
           {/* Content */}
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden relative">
             {activeSession ? (
-              <TerminalView session={activeSession} />
+              <ChatView session={activeSession} />
             ) : (
-              <div className="flex items-center justify-center h-full">
-                <div className="text-center animate-fade-in">
-                  <div className="text-7xl mb-6 opacity-80">🐚</div>
-                  <div className="text-2xl font-light text-reef-text-bright mb-2 tracking-tight">
-                    The Reef
-                  </div>
-                  <div className="text-sm text-reef-text-dim max-w-xs mx-auto leading-relaxed">
-                    {state.connectionStatus === 'connected'
-                      ? `${state.sessions.length} sessions loaded — select one from the sidebar`
-                      : 'Connecting to gateway…'}
-                  </div>
-                  {state.connectionStatus === 'connecting' && (
-                    <div className="mt-6 flex justify-center gap-1">
-                      {[0, 1, 2].map(i => (
-                        <div
-                          key={i}
-                          className="w-1.5 h-1.5 rounded-full bg-reef-accent animate-pulse"
-                          style={{ animationDelay: `${i * 200}ms` }}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <ActivityFeed
+                sessions={state.sessions}
+                connectionStatus={state.connectionStatus}
+                onSelectSession={selectSession}
+              />
             )}
           </div>
         </main>
@@ -207,13 +235,17 @@ export function App() {
         connectionStatus={state.connectionStatus}
         usageCost={state.usageCost}
       />
+
+      {/* Command Palette */}
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        sessions={state.sessions}
+        onSelectSession={selectSession}
+        onToggleTheme={toggleTheme}
+        onConnect={connectGateway}
+        gatewayUrl={state.gatewayUrl}
+      />
     </div>
   );
-}
-
-function StatusDot({ status }: { status: string }) {
-  const color = status === 'working' ? 'bg-emerald-500' :
-                status === 'idle' ? 'bg-amber-500' :
-                status === 'error' ? 'bg-red-500' : 'bg-zinc-600';
-  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} />;
 }

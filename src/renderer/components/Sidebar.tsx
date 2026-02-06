@@ -5,6 +5,7 @@ interface SidebarProps {
   sessions: SessionInfo[];
   selectedSession: string | null;
   onSelectSession: (id: string) => void;
+  loading?: boolean;
 }
 
 function formatCost(cost: number): string {
@@ -21,15 +22,42 @@ function timeAgo(ts?: string | number): string {
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  return `${days}d`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
-export function Sidebar({ sessions, selectedSession, onSelectSession }: SidebarProps) {
+function SkeletonSidebar() {
+  return (
+    <div className="px-2 py-2 space-y-1">
+      <div className="skeleton h-3 w-16 mb-3 ml-2" />
+      {[1, 2, 3].map(i => (
+        <div key={i} className="flex items-center gap-2 px-2 py-2">
+          <div className="skeleton w-2 h-2 rounded-full" />
+          <div className="skeleton w-6 h-6 rounded" />
+          <div className="flex-1">
+            <div className="skeleton h-3 w-20 mb-1" />
+            <div className="skeleton h-2 w-32" />
+          </div>
+        </div>
+      ))}
+      <div className="skeleton h-3 w-16 mb-3 ml-2 mt-4" />
+      {[4, 5, 6, 7].map(i => (
+        <div key={i} className="flex items-center gap-2 px-2 py-2">
+          <div className="skeleton w-2 h-2 rounded-full" />
+          <div className="skeleton w-6 h-6 rounded" />
+          <div className="flex-1">
+            <div className="skeleton h-3 w-20 mb-1" />
+            <div className="skeleton h-2 w-28" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function Sidebar({ sessions, selectedSession, onSelectSession, loading }: SidebarProps) {
   const [search, setSearch] = useState('');
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
 
-  // Build tree
   const topLevel = useMemo(() => sessions.filter(s => !s.parentSession), [sessions]);
   const subagentMap = useMemo(() => {
     const map = new Map<string, SessionInfo[]>();
@@ -43,7 +71,6 @@ export function Sidebar({ sessions, selectedSession, onSelectSession }: SidebarP
     return map;
   }, [sessions]);
 
-  // Filter
   const filtered = useMemo(() => {
     if (!search) return topLevel;
     const q = search.toLowerCase();
@@ -54,7 +81,6 @@ export function Sidebar({ sessions, selectedSession, onSelectSession }: SidebarP
     );
   }, [topLevel, search]);
 
-  // Group: active vs stopped
   const active = useMemo(() => filtered.filter(s => s.status === 'working' || s.status === 'idle'), [filtered]);
   const stopped = useMemo(() => filtered.filter(s => s.status !== 'working' && s.status !== 'idle'), [filtered]);
 
@@ -67,7 +93,7 @@ export function Sidebar({ sessions, selectedSession, onSelectSession }: SidebarP
   };
 
   return (
-    <div className="w-64 min-w-[220px] max-w-[340px] bg-reef-sidebar border-r border-reef-border flex flex-col overflow-hidden">
+    <div className="w-64 min-w-[220px] max-w-[340px] bg-reef-sidebar border-r border-reef-border flex flex-col overflow-hidden transition-all duration-200">
       {/* Search */}
       <div className="p-2">
         <div className="relative">
@@ -79,45 +105,48 @@ export function Sidebar({ sessions, selectedSession, onSelectSession }: SidebarP
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search sessions..."
-            className="w-full h-7 pl-8 pr-3 text-xs bg-reef-bg border border-reef-border rounded-md text-reef-text-bright placeholder-reef-text-dim focus:border-reef-accent focus:ring-1 focus:ring-reef-accent/20 focus:outline-none transition-all"
+            className="w-full h-7 pl-8 pr-3 text-xs bg-reef-bg border border-reef-border rounded-md text-reef-text-bright placeholder-reef-text-dim focus:border-reef-accent focus:ring-1 focus:ring-reef-accent/20 focus:outline-none transition-all duration-150"
           />
         </div>
       </div>
 
       {/* Session list */}
       <div className="flex-1 overflow-y-auto px-1.5">
-        {/* Active section */}
-        {active.length > 0 && (
-          <SectionGroup title="Active" count={active.length}>
-            {active.map(session => (
-              <SessionTree
-                key={session.id}
-                session={session}
-                subs={subagentMap.get(session.id) || []}
-                selectedSession={selectedSession}
-                expandedSessions={expandedSessions}
-                onSelect={onSelectSession}
-                onToggle={toggleExpand}
-              />
-            ))}
-          </SectionGroup>
-        )}
-
-        {/* Recent/Stopped section */}
-        {stopped.length > 0 && (
-          <SectionGroup title="Recent" count={stopped.length}>
-            {stopped.map(session => (
-              <SessionTree
-                key={session.id}
-                session={session}
-                subs={subagentMap.get(session.id) || []}
-                selectedSession={selectedSession}
-                expandedSessions={expandedSessions}
-                onSelect={onSelectSession}
-                onToggle={toggleExpand}
-              />
-            ))}
-          </SectionGroup>
+        {loading ? (
+          <SkeletonSidebar />
+        ) : (
+          <>
+            {active.length > 0 && (
+              <SectionGroup title="Active" count={active.length}>
+                {active.map(session => (
+                  <SessionTree
+                    key={session.id}
+                    session={session}
+                    subs={subagentMap.get(session.id) || []}
+                    selectedSession={selectedSession}
+                    expandedSessions={expandedSessions}
+                    onSelect={onSelectSession}
+                    onToggle={toggleExpand}
+                  />
+                ))}
+              </SectionGroup>
+            )}
+            {stopped.length > 0 && (
+              <SectionGroup title="Recent" count={stopped.length}>
+                {stopped.map(session => (
+                  <SessionTree
+                    key={session.id}
+                    session={session}
+                    subs={subagentMap.get(session.id) || []}
+                    selectedSession={selectedSession}
+                    expandedSessions={expandedSessions}
+                    onSelect={onSelectSession}
+                    onToggle={toggleExpand}
+                  />
+                ))}
+              </SectionGroup>
+            )}
+          </>
         )}
       </div>
 
@@ -196,11 +225,14 @@ function SessionRow({
   onClick: () => void;
   onToggle: () => void;
 }) {
+  // Status dot: active = green glow, error = red, stopped = grey
   const isActive = session.status === 'working' || session.status === 'idle';
+  const dotClass = isActive ? 'status-dot-active' :
+                   session.status === 'error' ? 'bg-red-500' : 'bg-zinc-600';
 
   return (
     <div
-      className={`group flex items-center gap-2 px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[12px] transition-all duration-100 ${
+      className={`group flex items-center gap-2 px-2 py-1.5 mx-1 rounded-md cursor-pointer text-[12px] transition-all duration-150 ${
         isSelected
           ? 'bg-reef-accent-muted text-reef-text-bright ring-1 ring-reef-accent/20'
           : 'hover:bg-reef-border/30 text-reef-text'
@@ -208,10 +240,9 @@ function SessionRow({
       style={{ paddingLeft: `${8 + depth * 14}px` }}
       onClick={onClick}
     >
-      {/* Expand arrow */}
       {hasChildren ? (
         <span
-          className="text-[9px] text-reef-text-dim w-3 flex-shrink-0 cursor-pointer hover:text-reef-text transition-colors"
+          className="text-[9px] text-reef-text-dim w-3 flex-shrink-0 cursor-pointer hover:text-reef-text transition-colors duration-150"
           onClick={(e) => { e.stopPropagation(); onToggle(); }}
         >
           {isExpanded ? '▼' : '▶'}
@@ -220,17 +251,9 @@ function SessionRow({
         <span className="w-3 flex-shrink-0" />
       )}
 
-      {/* Status dot */}
-      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-        session.status === 'working' ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' :
-        session.status === 'idle' ? 'bg-amber-500' :
-        session.status === 'error' ? 'bg-red-500' : 'bg-zinc-600'
-      }`} />
-
-      {/* Emoji */}
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotClass}`} />
       <span className="text-sm flex-shrink-0">{session.emoji || '🤖'}</span>
 
-      {/* Name + label */}
       <div className="flex-1 min-w-0">
         <div className="truncate font-medium text-[12px]">{session.agent}</div>
         {session.label && (
@@ -238,7 +261,6 @@ function SessionRow({
         )}
       </div>
 
-      {/* Cost */}
       <span className={`text-[10px] flex-shrink-0 tabular-nums ${
         isActive ? 'text-reef-text-dim' : 'text-reef-text-muted'
       }`}>
